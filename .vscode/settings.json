@@ -1,0 +1,23 @@
+{
+"java.project.sourcePaths": [
+    "src",
+    "."
+],
+"java.project.outputPath": "bin",
+"java.project.referencedLibraries": [
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\javafx.controls.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\javafx.base.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\javafx.web.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\javafx-swt.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\javafx.fxml.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\jfx.incubator.richtext.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\jfx.incubator.input.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\jdk.jsobject.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\javafx.swing.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\javafx.graphics.jar",
+    "d:\\BSCS15NUST\\Semester 2\\Object Oriented Programming\\JoshEJung\\lib\\javafx.media.jar"
+],
+"java.jdt.ls.vmargs": "-XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Dsun.zip.disableMemoryMapping=true",
+"java.configuration.updateBuildConfiguration": "automatic",
+"java.compile.nullAnalysis.mode": "automatic"
+}

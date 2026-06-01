@@ -1,0 +1,5132 @@
+/* ==============================================================================
+   FILE: AIController.java
+   =============================================================================*/
+
+import java.util.Random;
+
+/**
+ * AIController.java
+ * Enemy AI system with multiple difficulty tiers.
+ * AI reads player position and adapts behavior accordingly.
+ * Features aggressive, defensive, and reactive patterns.
+ */
+public class AIController {
+    public enum Difficulty { EASY, MEDIUM, HARD, BOSS }
+
+    private Difficulty difficulty;
+    private Random random = new Random();
+    private double actionTimer;
+    private double reactionDelay;
+    private double aggressiveness;
+    private boolean wantsToBlock;
+
+    public AIController(Difficulty difficulty) {
+        this.difficulty = difficulty;
+        switch (difficulty) {
+            case EASY:   reactionDelay = 1.2; aggressiveness = 0.3; break;
+            case MEDIUM: reactionDelay = 0.7; aggressiveness = 0.5; break;
+            case HARD:   reactionDelay = 0.35; aggressiveness = 0.7; break;
+            case BOSS:   reactionDelay = 0.2; aggressiveness = 0.85; break;
+        }
+        actionTimer = reactionDelay;
+    }
+
+    /**
+     * Updates AI and returns an action to perform.
+     * Returns: 0=idle, 1=moveForward, 2=moveBack, 3=lightAttack,
+     *          4=heavyAttack, 5=special, 6=block, 7=jump, 8=heal
+     */
+    public int update(double dt, Fighter self, Fighter opponent) {
+        actionTimer -= dt;
+        if (actionTimer > 0) return 0;
+
+        actionTimer = reactionDelay + random.nextDouble() * 0.3;
+        double dist = Math.abs(self.getX() - opponent.getX());
+        double hpRatio = (double) self.getHp() / self.getMaxHp();
+        double oppHpRatio = (double) opponent.getHp() / opponent.getMaxHp();
+        double roll = random.nextDouble();
+
+        // Low HP - defensive
+        if (hpRatio < 0.25 && self.getSpirit() >= 30) {
+            if (roll < 0.3) return 8; // heal
+            if (roll < 0.5) return 6; // block
+        }
+
+        // In attack range
+        if (dist < GameConfig.ATTACK_RANGE) {
+            if (roll < aggressiveness * 0.4) return 3; // light
+            if (roll < aggressiveness * 0.6) return 4; // heavy
+            if (roll < aggressiveness * 0.75 && self.getSpirit() >= 30) return 5; // special
+            if (roll < aggressiveness * 0.85) return 6; // block
+            return 2; // back off
+        }
+
+        // Mid range - close the gap
+        if (dist < GameConfig.ATTACK_RANGE * 2.5) {
+            if (roll < aggressiveness) return 1; // advance
+            if (roll < 0.9) return 1;
+            return 7; // jump
+        }
+
+        // Far away - always advance
+        return 1;
+    }
+
+    /**
+     * Execute the AI action on the fighter.
+     */
+    public void executeAction(int action, Fighter self, Fighter target,
+                               ParticleSystem particles, HUD hud) {
+        boolean faceLeft = target.getX() < self.getX();
+        self.setFacingLeft(faceLeft);
+
+        switch (action) {
+            case 1: // Move forward
+                double dir = faceLeft ? -1 : 1;
+                self.setTargetX(self.getX() + dir * 40);
+                break;
+            case 2: // Move back
+                dir = faceLeft ? 1 : -1;
+                self.setTargetX(self.getX() + dir * 40);
+                break;
+            case 3: // Light attack
+                if (Math.abs(self.getX()-target.getX()) < GameConfig.ATTACK_RANGE) {
+                    self.performAttack(target, particles, hud, MoveType.LIGHT_PUNCH);
+                }
+                break;
+            case 4: // Heavy attack
+                if (Math.abs(self.getX()-target.getX()) < GameConfig.ATTACK_RANGE) {
+                    self.performAttack(target, particles, hud, MoveType.HEAVY_PUNCH);
+                }
+                break;
+            case 5: // Special
+                if (Math.abs(self.getX()-target.getX()) < GameConfig.ATTACK_RANGE * 1.5) {
+                    self.performSpecial(target, particles, hud);
+                }
+                break;
+            case 6: // Block
+                self.setBlocking(true);
+                break;
+            case 7: // Jump
+                self.jump();
+                break;
+            case 8: // Heal
+                self.heal(20, particles);
+                self.setSpirit(self.getSpirit() - 25);
+                break;
+            default:
+                self.setBlocking(false);
+                break;
+        }
+    }
+
+    public void setDifficulty(Difficulty d) {
+        this.difficulty = d;
+        switch (d) {
+            case EASY:   reactionDelay = 1.2; aggressiveness = 0.3; break;
+            case MEDIUM: reactionDelay = 0.7; aggressiveness = 0.5; break;
+            case HARD:   reactionDelay = 0.35; aggressiveness = 0.7; break;
+            case BOSS:   reactionDelay = 0.2; aggressiveness = 0.85; break;
+        }
+    }
+
+    public Difficulty getDifficulty() { return difficulty; }
+}
+
+
+/* ==============================================================================
+   FILE: App.java
+   =============================================================================*/
+
+/**
+ * App.java
+ * This is a "Wrapper" class. 
+ * By running THIS file instead of Main.java, we bypass 
+ * the requirement for a module-info.java file and many JavaFX module layer errors.
+ */
+public class App {
+    public static void main(String[] args) {
+        try {
+            System.out.println("[Josh-e-Jung] Initializing Launcher...");
+            
+            // This direct call to Main.main allows the JVM to treat 
+            // JavaFX as a set of regular classpath libraries rather 
+            // than strict modules.
+            Main.main(args);
+            
+        } catch (Exception e) {
+            System.err.println("[Launcher Error] Could not start the application.");
+            e.printStackTrace();
+        }
+    }
+}
+
+
+/* ==============================================================================
+   FILE: AudioManager.java
+   =============================================================================*/
+
+import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * AudioManager.java
+ * Manages background music and sound effects.
+ * Structured for easy drop-in of WAV/MP3 audio files.
+ * Audio files go in assets/audio/ directory.
+ *
+ * Expected audio files (add your own):
+ *   hit_light.wav, hit_heavy.wav, block.wav,
+ *   special.wav, heal.wav, ko.wav, round_start.wav,
+ *   victory.wav, defeat.wav, menu_bgm.wav, fight_bgm.wav
+ */
+public class AudioManager {
+    private static Map<String, javafx.scene.media.AudioClip> sfxCache = new HashMap<>();
+    private static javafx.scene.media.MediaPlayer bgmPlayer;
+    private static double sfxVolume = 0.7;
+    private static double bgmVolume = 0.4;
+
+    public static void loadSFX(String name) {
+        String path = GameConfig.AUDIO_DIR + name;
+        File file = new File(path);
+        if (file.exists()) {
+            try {
+                javafx.scene.media.AudioClip clip =
+                    new javafx.scene.media.AudioClip(file.toURI().toString());
+                sfxCache.put(name, clip);
+            } catch (Exception e) {
+                System.out.println("[Audio] Could not load SFX: " + name);
+            }
+        }
+    }
+
+    public static void playSFX(String name) {
+        javafx.scene.media.AudioClip clip = sfxCache.get(name);
+        if (clip != null) {
+            clip.play(sfxVolume);
+        }
+    }
+
+    public static void playBGM(String filename) {
+        stopBGM();
+        String path = GameConfig.AUDIO_DIR + filename;
+        File file = new File(path);
+        if (file.exists()) {
+            try {
+                javafx.scene.media.Media media =
+                    new javafx.scene.media.Media(file.toURI().toString());
+                bgmPlayer = new javafx.scene.media.MediaPlayer(media);
+                bgmPlayer.setCycleCount(javafx.scene.media.MediaPlayer.INDEFINITE);
+                bgmPlayer.setVolume(bgmVolume);
+                bgmPlayer.play();
+            } catch (Exception e) {
+                System.out.println("[Audio] Could not play BGM: " + filename);
+            }
+        }
+    }
+
+    public static void stopBGM() {
+        if (bgmPlayer != null) {
+            bgmPlayer.stop();
+            bgmPlayer = null;
+        }
+    }
+
+    public static void preloadAll() {
+        String[] sfxFiles = {
+            "hit_light.wav", "hit_heavy.wav", "block.wav",
+            "special.wav", "heal.wav", "ko.wav",
+            "round_start.wav", "victory.wav", "defeat.wav"
+        };
+        for (String f : sfxFiles) loadSFX(f);
+        System.out.println("[Audio] Loaded " + sfxCache.size() + " sound effects.");
+    }
+
+    public static void setSfxVolume(double v) { sfxVolume = v; }
+    public static void setBgmVolume(double v) { bgmVolume = v; }
+}
+
+
+/* ==============================================================================
+   FILE: CharSelectState.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.input.KeyCode;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+
+public class CharSelectState extends GameState {
+
+    private int p1Cursor = 0;
+    private int p2Cursor = 7;
+    private boolean p1Ready = false;
+    private boolean p2Ready = false;
+    private double flashTimer = 0;
+
+    public CharSelectState(GameEngine engine) {
+        super(engine);
+    }
+
+    @Override
+    public void enter() {
+        p1Ready = false;
+        p2Ready = false;
+        
+        // If arcade or story mode, P2 is AI, so mark it ready immediately
+        if (engine.getGameMode() == GameConfig.MODE_ARCADE || 
+            engine.getGameMode() == GameConfig.MODE_STORY) {
+            p2Cursor = -1; // Hidden cursor
+            p2Ready = true;
+        }
+    }
+
+    @Override
+    public void exit() {
+    }
+
+    @Override
+    public void update(double dt) {
+        if (flashTimer > 0) {
+            flashTimer -= dt;
+        }
+
+        if (p1Ready && p2Ready && flashTimer <= 0) {
+            engine.setP1CharIndex(p1Cursor);
+            if (engine.isPvP()) {
+                engine.setP2CharIndex(p2Cursor);
+            }
+            engine.switchState("VSScreen");
+        }
+    }
+
+    @Override
+    public void render(GraphicsContext gc) {
+        // Background
+        gc.setFill(GameConfig.COLOR_DARK_BG);
+        gc.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+
+        // Title
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setFont(Font.font("Impact", FontWeight.BOLD, 48));
+        gc.setFill(GameConfig.COLOR_GOLD);
+        gc.fillText("SELECT YOUR FIGHTER", GameConfig.CANVAS_WIDTH / 2, 60);
+
+        // Draw Character Grid (2 rows of 4)
+        double startX = GameConfig.CANVAS_WIDTH / 2 - 250;
+        double startY = 150;
+        double portraitSize = 100;
+        double padding = 20;
+
+        for (int i = 0; i < GameConfig.CHARACTER_IDS.length; i++) {
+            int row = i / 4;
+            int col = i % 4;
+            double px = startX + col * (portraitSize + padding);
+            double py = startY + row * (portraitSize + padding);
+
+            // Portrait
+            SpriteRenderer.drawPortrait(gc, 
+                SpriteRenderer.loadCharacterPortrait(GameConfig.CHARACTER_IDS[i]), 
+                px, py, portraitSize, portraitSize, false);
+
+            // Cursors
+            if (i == p1Cursor) {
+                gc.setStroke(Color.CYAN);
+                gc.setLineWidth(4);
+                gc.strokeRect(px - 4, py - 4, portraitSize + 8, portraitSize + 8);
+                gc.setFill(Color.CYAN);
+                gc.setFont(Font.font("Verdana", FontWeight.BOLD, 14));
+                gc.fillText("1P", px + portraitSize / 2, py - 10);
+            }
+
+            if (engine.isPvP() && p2Cursor >= 0 && i == p2Cursor) {
+                gc.setStroke(Color.RED);
+                gc.setLineWidth(4);
+                gc.strokeRect(px - 2, py - 2, portraitSize + 4, portraitSize + 4);
+                gc.setFill(Color.RED);
+                gc.setFont(Font.font("Verdana", FontWeight.BOLD, 14));
+                gc.fillText("2P", px + portraitSize / 2, py + portraitSize + 20);
+            }
+        }
+
+        // Selected Character Details
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.setFont(Font.font("Verdana", FontWeight.BOLD, 24));
+        
+        // P1 Details
+        gc.setFill(Color.CYAN);
+        gc.fillText(GameConfig.CHARACTER_NAMES[p1Cursor], 50, 450);
+        gc.setFont(Font.font("Verdana", 16));
+        gc.setFill(Color.WHITE);
+        gc.fillText(GameConfig.CHARACTER_TITLES[p1Cursor], 50, 480);
+        if (p1Ready) {
+            gc.setFill(Color.CYAN);
+            gc.fillText("READY!", 50, 510);
+        }
+
+        // P2 Details (only if PvP)
+        if (engine.isPvP() && p2Cursor >= 0 && p2Cursor < GameConfig.CHARACTER_IDS.length) {
+            gc.setTextAlign(TextAlignment.RIGHT);
+            gc.setFont(Font.font("Verdana", FontWeight.BOLD, 24));
+            gc.setFill(Color.RED);
+            gc.fillText(GameConfig.CHARACTER_NAMES[p2Cursor], GameConfig.CANVAS_WIDTH - 50, 450);
+            gc.setFont(Font.font("Verdana", 16));
+            gc.setFill(Color.WHITE);
+            gc.fillText(GameConfig.CHARACTER_TITLES[p2Cursor], GameConfig.CANVAS_WIDTH - 50, 480);
+            if (p2Ready) {
+                gc.setFill(Color.RED);
+                gc.fillText("READY!", GameConfig.CANVAS_WIDTH - 50, 510);
+            }
+        }
+
+        // Flash overlay when both ready
+        if (p1Ready && p2Ready && flashTimer > 0) {
+            gc.setFill(new Color(1, 1, 1, flashTimer));
+            gc.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+        }
+    }
+
+    @Override
+    public void handleKeyPressed(KeyCode code) {
+        if (p1Ready && p2Ready) return;
+
+        // P1 Controls (Arrow keys)
+        if (!p1Ready) {
+            if (code == KeyCode.UP) moveCursor(true, -4);
+            if (code == KeyCode.DOWN) moveCursor(true, 4);
+            if (code == KeyCode.LEFT) moveCursor(true, -1);
+            if (code == KeyCode.RIGHT) moveCursor(true, 1);
+            if (code == KeyCode.ENTER || code == KeyCode.SPACE) {
+                p1Ready = true;
+                AudioManager.playSFX("hit_heavy.wav");
+                checkBothReady();
+            }
+        }
+
+        // P2 Controls (WASD, only if PvP)
+        if (engine.isPvP() && !p2Ready) {
+            if (code == KeyCode.W) moveCursor(false, -4);
+            if (code == KeyCode.S) moveCursor(false, 4);
+            if (code == KeyCode.A) moveCursor(false, -1);
+            if (code == KeyCode.D) moveCursor(false, 1);
+            if (code == KeyCode.Q) {
+                p2Ready = true;
+                AudioManager.playSFX("hit_heavy.wav");
+                checkBothReady();
+            }
+        }
+    }
+
+    private void moveCursor(boolean isP1, int delta) {
+        int cursor = isP1 ? p1Cursor : p2Cursor;
+        cursor += delta;
+        if (cursor < 0) cursor += 8;
+        if (cursor > 7) cursor -= 8;
+        
+        if (isP1) p1Cursor = cursor;
+        else p2Cursor = cursor;
+        
+        AudioManager.playSFX("hit_light.wav");
+    }
+
+    private void checkBothReady() {
+        if (p1Ready && p2Ready) {
+            flashTimer = 1.0; // 1 second flash before transition
+            AudioManager.playSFX("special.wav");
+        }
+    }
+}
+
+
+/* ==============================================================================
+   FILE: ChatBubble.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+
+/**
+ * ChatBubble.java
+ * Renders animated speech bubbles above fighters during combat.
+ * Bubbles appear, linger, then fade out with a smooth animation.
+ * Used for taunts, battle cries, and character-specific dialogue.
+ */
+public class ChatBubble {
+
+    private String text;
+    private double x, y;
+    private double lifetime;     // Total time to display
+    private double elapsed;      // Time since spawn
+    private boolean isLeft;      // Tail points left (P1) or right (P2)
+    private Color borderColor;
+
+    // Animation state
+    private double scaleAnim = 0; // Grows from 0 to 1
+
+    // Static taunt databases per character
+    private static final String[][] FIGHT_TAUNTS = {
+        // [0] Al-Murtaza
+        {
+            "Bismillah!",
+            "Ya Ali!",
+            "Feel the Zulfiqar!",
+            "Your darkness ends here!",
+            "By the will of the Divine!",
+            "I fight for the light!",
+            "You cannot defeat faith!",
+            "This sword never fails!",
+            "La hawla wa la quwwata...",
+            "Surrender, or face justice!"
+        },
+        // [1] Noor Jahan
+        {
+            "Bow before the Empress!",
+            "My magic knows no bounds!",
+            "Nazar-e-Bad upon you!",
+            "The Mughal Empire strikes!",
+            "You dare challenge me?",
+            "Feel my arcane fury!",
+            "My power is absolute!",
+            "Such impudence!"
+        },
+        // [2] Peer Sahib
+        {
+            "Peace be upon you, child...",
+            "Let me teach you humility.",
+            "The Sufi way is peace...\nbut also strength.",
+            "SubhanAllah!",
+            "Forgiveness is power.",
+            "Your spirit is restless.",
+            "Calm yourself, child.",
+            "The dervish whirls!"
+        },
+        // [3] Marid
+        {
+            "The ocean obeys ME!",
+            "Drown in my waves!",
+            "You are but a drop...\nI am the flood!",
+            "Water crushes stone!",
+            "Feel the tide's wrath!",
+            "Foolish mortal!",
+            "My waters will consume you!",
+            "The depths call for you!"
+        },
+        // [4] Churail
+        {
+            "Hehehehe...",
+            "Your soul smells... delicious!",
+            "Come closer, darling...",
+            "No one leaves my haveli!",
+            "I'll add you to\nmy collection!",
+            "Scream for me!",
+            "The night is mine!",
+            "You'll never escape!"
+        },
+        // [5] Dev
+        {
+            "CRUSH! SMASH! DESTROY!",
+            "Puny human!",
+            "I am the mountain!",
+            "Nothing can break me!",
+            "RAAAAGH!",
+            "Dev STRONG!",
+            "You are an insect!",
+            "The earth trembles!"
+        },
+        // [6] Jinn
+        {
+            "Burn in my flames!",
+            "Fire is my nature!",
+            "You cannot extinguish me!",
+            "The smokeless fire rises!",
+            "Ashes to ashes!",
+            "Feel the inferno!",
+            "I was born from flame!",
+            "Your world will burn!"
+        },
+        // [7] Iblis
+        {
+            "KNEEL before darkness!",
+            "I refused to bow once...\nI refuse again!",
+            "Your faith is WEAK!",
+            "I am ETERNAL!",
+            "Foolish mortal warrior...",
+            "The throne of shadows\nis my birthright!",
+            "Despair is my weapon!",
+            "You CANNOT win!",
+            "I am the whisper\nin every heart!",
+            "AHAHAHA!"
+        }
+    };
+
+    // Pre-fight intro dialogue (P1 says first, P2 responds)
+    private static final String[][] INTRO_DIALOGUE_P1 = {
+        // P1 intro lines (indexed by P1 character index)
+        {"Let us begin!", "Prepare yourself!", "I won't hold back!", "For honor!", "In the name of light!", "Show me your strength!", "Ready? Let's go!", "Time to fight!"}
+    };
+
+    // Response from P2 based on their character
+    private static final String[] INTRO_RESPONSE = {
+        "You'll regret this!",       // Al-Murtaza
+        "How amusing...",             // Noor Jahan
+        "May the best soul win.",     // Peer Sahib
+        "You will drown!",           // Marid
+        "Fresh meat! Hehehe...",     // Churail
+        "SMASH YOU!",               // Dev
+        "You'll be cinders!",        // Jinn
+        "This will be your end!"    // Iblis
+    };
+
+    public ChatBubble(String text, double x, double y, boolean isLeft, Color borderColor, double lifetime) {
+        this.text = text;
+        this.x = x;
+        this.y = y;
+        this.isLeft = isLeft;
+        this.borderColor = borderColor;
+        this.lifetime = lifetime;
+        this.elapsed = 0;
+        this.scaleAnim = 0;
+    }
+
+    /** Update the bubble animation. Returns true if bubble is still alive. */
+    public boolean update(double dt) {
+        elapsed += dt;
+        // Pop-in animation (first 0.15s)
+        if (scaleAnim < 1.0) {
+            scaleAnim = Math.min(1.0, scaleAnim + dt * 7);
+        }
+        return elapsed < lifetime;
+    }
+
+    /** Render the speech bubble. */
+    public void render(GraphicsContext gc) {
+        if (text == null || text.isEmpty()) return;
+
+        // Fade out in last 0.5s
+        double alpha = 1.0;
+        if (elapsed > lifetime - 0.5) {
+            alpha = Math.max(0, (lifetime - elapsed) / 0.5);
+        }
+
+        gc.save();
+        gc.setGlobalAlpha(alpha);
+
+        // Calculate bubble dimensions based on text
+        String[] lines = text.split("\n");
+        int lineCount = lines.length;
+        int maxLineLen = 0;
+        for (String l : lines) {
+            if (l.length() > maxLineLen) maxLineLen = l.length();
+        }
+
+        double bubbleW = Math.max(100, maxLineLen * 8.5 + 24);
+        double bubbleH = 28 + lineCount * 18;
+        double bubbleX = isLeft ? x - bubbleW - 10 : x + 10;
+        double bubbleY = y - bubbleH - 20;
+
+        // Clamp to screen
+        bubbleX = Math.max(5, Math.min(GameConfig.CANVAS_WIDTH - bubbleW - 5, bubbleX));
+        bubbleY = Math.max(5, bubbleY);
+
+        // Scale animation
+        gc.translate(bubbleX + bubbleW / 2, bubbleY + bubbleH / 2);
+        gc.scale(scaleAnim, scaleAnim);
+        gc.translate(-(bubbleX + bubbleW / 2), -(bubbleY + bubbleH / 2));
+
+        // Bubble background
+        gc.setFill(new Color(1, 1, 1, 0.9));
+        gc.fillRoundRect(bubbleX, bubbleY, bubbleW, bubbleH, 12, 12);
+
+        // Border
+        gc.setStroke(borderColor);
+        gc.setLineWidth(2);
+        gc.strokeRoundRect(bubbleX, bubbleY, bubbleW, bubbleH, 12, 12);
+
+        // Tail triangle
+        double tailX = isLeft ? bubbleX + bubbleW - 20 : bubbleX + 20;
+        gc.setFill(new Color(1, 1, 1, 0.9));
+        gc.fillPolygon(
+            new double[]{tailX - 6, tailX + 6, isLeft ? tailX + 12 : tailX - 12},
+            new double[]{bubbleY + bubbleH, bubbleY + bubbleH, bubbleY + bubbleH + 10}, 3
+        );
+        // Tail border
+        gc.setStroke(borderColor);
+        gc.setLineWidth(1.5);
+        gc.strokePolygon(
+            new double[]{tailX - 6, tailX + 6, isLeft ? tailX + 12 : tailX - 12},
+            new double[]{bubbleY + bubbleH, bubbleY + bubbleH, bubbleY + bubbleH + 10}, 3
+        );
+
+        // Text
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.setFont(Font.font("Verdana", FontWeight.BOLD, 13));
+        gc.setFill(Color.web("#1a1a1a"));
+        double textY = bubbleY + 18;
+        for (String l : lines) {
+            gc.fillText(l, bubbleX + 12, textY);
+            textY += 18;
+        }
+
+        gc.restore();
+    }
+
+    // --- Static helper methods ---
+
+    /** Get a random taunt for a character by index. */
+    public static String getRandomTaunt(int characterIndex) {
+        if (characterIndex < 0 || characterIndex >= FIGHT_TAUNTS.length) return "...";
+        String[] taunts = FIGHT_TAUNTS[characterIndex];
+        return taunts[(int)(Math.random() * taunts.length)];
+    }
+
+    /** Get an intro line for a character. */
+    public static String getIntroLine(int characterIndex) {
+        String[] lines = INTRO_DIALOGUE_P1[0]; // Generic pool
+        return lines[(int)(Math.random() * lines.length)];
+    }
+
+    /** Get an intro response for a character by index. */
+    public static String getIntroResponse(int characterIndex) {
+        if (characterIndex < 0 || characterIndex >= INTRO_RESPONSE.length) return "...";
+        return INTRO_RESPONSE[characterIndex];
+    }
+
+    // Getters
+    public double getX() { return x; }
+    public double getY() { return y; }
+    public void setPosition(double x, double y) { this.x = x; this.y = y; }
+}
+
+
+/* ==============================================================================
+   FILE: ChuralFighter.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+
+/**
+ * ChuralFighter.java - CHURAIL (Ghost Witch)
+ * Fast, eerie villain from Pakistani folklore.
+ * Implements Curseable - can apply damage-over-time curses.
+ * Low HP but very fast and disorienting attacks.
+ */
+public class ChuralFighter extends Fighter implements Curseable {
+
+    private boolean cursed = false;
+
+    public ChuralFighter() {
+        super("CHURAIL", "churail", "The Ghost Witch", 4, 80, 100);
+    }
+
+    @Override
+    protected void initMoves() {
+        moves.add(new Move("Claw Swipe", MoveType.LIGHT_PUNCH, 11, 0, Color.GHOSTWHITE));
+        moves.add(new Move("Soul Rend", MoveType.HEAVY_PUNCH, 19, 0, Color.LIMEGREEN));
+        moves.add(new Move("Phantom Kick", MoveType.LIGHT_KICK, 12, 0, Color.PALEGREEN));
+        moves.add(new Move("Banshee Kick", MoveType.HEAVY_KICK, 21, 0, Color.DARKGREEN));
+        moves.add(new Move("Wailing Curse", MoveType.SPECIAL, 38, 28, Color.GREEN));
+        moves.add(new Move("Soul Devour", MoveType.SUPER, 55, 55, Color.DARKGREEN));
+        moves.add(new Move("Life Drain", MoveType.HEAL, 0, 18, Color.LIME));
+    }
+
+    @Override
+    public void performSpecial(Fighter target, ParticleSystem particles, HUD hud) {
+        if (getSpirit() < 28) return;
+        int dmg = 38 + getLevel() * 3 + getAttackBonus();
+        if (target.isBlocking()) dmg = (int)(dmg * 0.3);
+        target.takeDamage(dmg, particles);
+        target.applyKnockback(isFacingLeft() ? -25 : 25);
+        setSpirit(getSpirit() - 28);
+        // Also steal some HP
+        heal(10, null);
+        particles.spawnBigText("WAILING CURSE!", getX(), getY() - 220, Color.GREEN);
+        particles.spawnFloatingText("-" + dmg, target.getX(), target.getY() - 180, Color.RED);
+        particles.spawnAura(target.getX(), target.getY() - 80, Color.GREEN, 20);
+        particles.triggerShake(GameConfig.SHAKE_INTENSITY_LIGHT);
+        particles.triggerHitFlash(Color.GREEN);
+        AudioManager.playSFX("special.wav");
+    }
+
+    @Override
+    public void applyCurse(Fighter target, ParticleSystem particles) {
+        cursed = true;
+        particles.spawnFloatingText("CURSED!", target.getX(), target.getY() - 200, Color.GREEN);
+        particles.spawnAura(target.getX(), target.getY() - 80, Color.DARKGREEN, 15);
+    }
+    @Override public void removeCurse() { cursed = false; }
+    @Override public boolean isCursed() { return cursed; }
+    @Override public int getCurseDamagePerSecond() { return 4; }
+
+    @Override
+    public void drawSelf(GraphicsContext gc) {
+        // Ghostly flickering body - slight transparency variation
+        double ghostAlpha = 0.85 + Math.sin(bobTimer * 4) * 0.1;
+        gc.save();
+        gc.setGlobalAlpha(ghostAlpha);
+        drawBase(gc, Color.web("#2a3a2a"), Color.web("#1a2a1a"));
+        gc.restore();
+
+        gc.save();
+        gc.translate(x, y + Math.sin(bobTimer) * 3);
+        if (facingLeft) gc.scale(-1, 1);
+
+        // Long hair flowing upward (more strands)
+        gc.setFill(Color.BLACK);
+        for (int i = 0; i < 7; i++) {
+            double hx = -25 + i * 8 + Math.sin(bobTimer * 1.5 + i) * 6;
+            double hairLen = 35 + i * 4 + Math.sin(bobTimer * 2 + i * 0.5) * 8;
+            gc.fillRect(hx, -195, 3, hairLen);
+        }
+
+        // Glowing eyes - more intense during attack
+        double eyeGlow = isAttacking ? 1.0 : 0.7 + Math.sin(bobTimer * 3) * 0.3;
+        gc.setFill(new Color(0, 1, 0.3, eyeGlow));
+        gc.fillOval(-14, -162, 8, 6);
+        gc.fillOval(6, -162, 8, 6);
+        // Eye light trails when attacking
+        if (isAttacking) {
+            gc.setFill(new Color(0, 1, 0.3, 0.3));
+            gc.fillOval(-18, -162, 16, 6);
+            gc.fillOval(2, -162, 16, 6);
+        }
+
+        // Claw attacks - extend forward
+        if (isAttacking) {
+            gc.setStroke(Color.web("#00FF66"));
+            gc.setLineWidth(2);
+            for (int i = 0; i < 3; i++) {
+                double clawY = -120 + i * 12;
+                gc.strokeLine(35, clawY, 65, clawY - 8);
+            }
+            // Slash effect
+            gc.setFill(new Color(0, 1, 0.4, 0.2));
+            gc.fillOval(40, -140, 30, 50);
+        }
+
+        // Reversed feet (folklore detail)
+        gc.setFill(Color.web("#1a2a1a"));
+        gc.fillOval(-22, -8, 14, 10);
+        gc.fillOval(8, -8, 14, 10);
+
+        // Ghostly trail
+        gc.setFill(new Color(0.5, 1, 0.5, 0.1 + Math.sin(bobTimer * 2) * 0.05));
+        gc.fillOval(-55, -150, 110, 170);
+
+        gc.restore();
+    }
+
+    @Override public Color getPrimaryColor() { return Color.DARKGREEN; }
+    @Override public Color getAuraColor() { return Color.LIMEGREEN; }
+}
+
+
+/* ==============================================================================
+   FILE: ComboSystem.java
+   =============================================================================*/
+
+import javafx.scene.input.KeyCode;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * ComboSystem.java
+ * Tracks player input sequences for combo detection.
+ * Supports chain combos with timing windows.
+ * Displays combo count and manages damage multipliers.
+ */
+public class ComboSystem {
+    private List<KeyCode> inputBuffer;
+    private long lastInputTime;
+    private int hitCount;
+    private double damageMultiplier;
+    private double comboTimer;
+
+    public ComboSystem() {
+        inputBuffer = new ArrayList<>();
+        hitCount = 0;
+        damageMultiplier = 1.0;
+        comboTimer = 0;
+    }
+
+    public void registerInput(KeyCode key) {
+        long now = System.currentTimeMillis();
+        if (now - lastInputTime > GameConfig.MAX_COMBO_WINDOW_MS) {
+            inputBuffer.clear();
+        }
+        inputBuffer.add(key);
+        lastInputTime = now;
+        if (inputBuffer.size() > 10) inputBuffer.remove(0);
+    }
+
+    public void registerHit() {
+        hitCount++;
+        comboTimer = 0.8;
+        damageMultiplier = 1.0 + (hitCount - 1) * 0.15;
+        damageMultiplier = Math.min(damageMultiplier, 3.0);
+    }
+
+    public void update(double dt) {
+        if (comboTimer > 0) {
+            comboTimer -= dt;
+            if (comboTimer <= 0) {
+                hitCount = 0;
+                damageMultiplier = 1.0;
+                inputBuffer.clear();
+            }
+        }
+    }
+
+    public void reset() {
+        inputBuffer.clear();
+        hitCount = 0;
+        damageMultiplier = 1.0;
+        comboTimer = 0;
+    }
+
+    public int getHitCount() { return hitCount; }
+    public double getDamageMultiplier() { return damageMultiplier; }
+    public boolean isInCombo() { return hitCount > 1; }
+    public List<KeyCode> getInputBuffer() { return inputBuffer; }
+}
+
+
+/* ==============================================================================
+   FILE: Curseable.java
+   =============================================================================*/
+
+/**
+ * Curseable.java
+ * Interface for characters that can apply and receive curses.
+ * Demonstrates interface with multiple method contracts.
+ */
+public interface Curseable {
+    void applyCurse(Fighter target, ParticleSystem particles);
+    void removeCurse();
+    boolean isCursed();
+    int getCurseDamagePerSecond();
+}
+
+
+/* ==============================================================================
+   FILE: DevFighter.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+
+/**
+ * DevFighter.java - DEV (Stone Giant)
+ * Massive slow tank villain. Very high HP, devastating damage.
+ * Pure brute force - no magic, just raw power.
+ */
+public class DevFighter extends Fighter {
+
+    public DevFighter() {
+        super("DEV", "dev", "The Stone Giant", 5, 150, 60);
+    }
+
+    @Override
+    protected void initMoves() {
+        moves.add(new Move("Stone Fist", MoveType.LIGHT_PUNCH, 14, 0, Color.SLATEGRAY));
+        moves.add(new Move("Boulder Smash", MoveType.HEAVY_PUNCH, 28, 0, Color.DARKGRAY));
+        moves.add(new Move("Ground Stomp", MoveType.LIGHT_KICK, 15, 0, Color.GRAY));
+        moves.add(new Move("Earthquake", MoveType.HEAVY_KICK, 30, 0, Color.DIMGRAY));
+        moves.add(new Move("Avalanche", MoveType.SPECIAL, 50, 35, Color.SADDLEBROWN));
+        moves.add(new Move("Mountain Fury", MoveType.SUPER, 70, 60, Color.DARKRED));
+        moves.add(new Move("Stone Skin", MoveType.HEAL, 0, 20, Color.GRAY));
+    }
+
+    @Override
+    public void performSpecial(Fighter target, ParticleSystem particles, HUD hud) {
+        if (getSpirit() < 35) return;
+        int dmg = 50 + getLevel() * 4 + getAttackBonus();
+        if (target.isBlocking()) dmg = (int)(dmg * 0.3);
+        target.takeDamage(dmg, particles);
+        target.applyKnockback(isFacingLeft() ? -60 : 60);
+        setSpirit(getSpirit() - 35);
+        particles.spawnBigText("AVALANCHE!", getX(), getY() - 240, Color.SADDLEBROWN);
+        particles.spawnFloatingText("-" + dmg, target.getX(), target.getY() - 180, Color.RED);
+        // Ground slam particles
+        for (int i = 0; i < 20; i++) {
+            particles.spawnHitParticles(target.getX() + (i - 10) * 15,
+                GameConfig.GROUND_Y, Color.SADDLEBROWN, 2);
+        }
+        particles.triggerShake(GameConfig.SHAKE_INTENSITY_KO);
+        particles.triggerHitFlash(Color.SADDLEBROWN);
+        AudioManager.playSFX("special.wav");
+    }
+
+    @Override
+    public void drawSelf(GraphicsContext gc) {
+        // Dev is bigger than normal
+        gc.save();
+        gc.translate(x, y + Math.sin(bobTimer) * 2);
+        if (facingLeft) gc.scale(-1, 1);
+        // Shadow
+        gc.setFill(new Color(0, 0, 0, 0.4));
+        gc.fillOval(-55, -5, 110, 20);
+        // Large body
+        gc.setFill(Color.SLATEGRAY);
+        gc.fillRoundRect(-45, -160, 90, 140, 15, 15);
+        // Stone texture
+        gc.setFill(Color.DIMGRAY);
+        gc.fillRoundRect(-40, -150, 35, 30, 5, 5);
+        gc.fillRoundRect(5, -130, 30, 25, 5, 5);
+        // Head
+        gc.setFill(Color.GRAY);
+        gc.fillOval(-30, -210, 60, 55);
+        // Eyes
+        gc.setFill(Color.RED);
+        gc.fillOval(-15, -192, 10, 8);
+        gc.fillOval(5, -192, 10, 8);
+        // Jaw/fangs
+        gc.setFill(Color.DARKGRAY);
+        gc.fillRect(-15, -170, 30, 12);
+        gc.setFill(Color.IVORY);
+        gc.fillRect(-10, -170, 5, 8);
+        gc.fillRect(5, -170, 5, 8);
+        // Legs
+        gc.setFill(Color.SLATEGRAY.darker());
+        gc.fillRect(-30, -20, 22, 25);
+        gc.fillRect(8, -20, 22, 25);
+        // Portrait overlay
+        if (getPortrait() != null) {
+            gc.drawImage(getPortrait(), -50, -240, 100, 100);
+        }
+        // Hit flash
+        if (hitFlashTimer > 0) {
+            gc.setFill(new Color(1, 1, 1, hitFlashTimer * 4));
+            gc.fillRoundRect(-45, -160, 90, 140, 15, 15);
+        }
+        gc.restore();
+    }
+
+    @Override public Color getPrimaryColor() { return Color.SLATEGRAY; }
+    @Override public Color getAuraColor() { return Color.SADDLEBROWN; }
+}
+
+
+/* ==============================================================================
+   FILE: Fighter.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.Image;
+import javafx.scene.paint.Color;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Fighter.java
+ * Abstract base class for all playable and enemy fighters.
+ * Encapsulates position, health, spirit, physics, combat state,
+ * sprite rendering, and move lists. All 8 characters extend this class.
+ *
+ * Demonstrates:
+ * - Abstraction (abstract methods for unique behavior)
+ * - Encapsulation (private fields, public getters/setters)
+ * - Polymorphism (overridden performAttack, performSpecial, drawSelf)
+ */
+public abstract class Fighter {
+
+    // --- Identity ---
+    private String name;
+    private String characterId;
+    private String title;
+    private int index; // Index in CHARACTER_IDS array
+
+    // --- Stats ---
+    private int hp;
+    private int maxHp;
+    private int spirit;
+    private int maxSpirit;
+    private int level;
+    private int attackBonus;
+    private int defenseBonus;
+
+    // --- Position & Physics ---
+    protected double x, y;
+    protected double targetX;
+    protected double velocityX, velocityY;
+    protected boolean onGround;
+    protected boolean facingLeft;
+
+    // --- Combat State ---
+    protected boolean isBlocking;
+    protected boolean isAttacking;
+    protected boolean isHit;
+    protected double hitStunTimer;
+    protected double attackTimer;
+    protected double hitFlashTimer;
+    protected int comboCount;
+    protected double comboTimer;
+    protected boolean isDashing;
+    protected double dashTimer;
+
+    // --- Animation ---
+    protected double bobTimer;
+    protected double breatheScale;
+    protected Image portrait;
+
+    // --- Moves ---
+    protected List<Move> moves;
+
+    // --- Round tracking ---
+    private int roundsWon;
+
+    // Constructor
+    public Fighter(String name, String characterId, String title, int index,
+                   int maxHp, int maxSpirit) {
+        this.name = name;
+        this.characterId = characterId;
+        this.title = title;
+        this.index = index;
+        this.maxHp = maxHp;
+        this.hp = maxHp;
+        this.maxSpirit = maxSpirit;
+        this.spirit = maxSpirit;
+        this.level = 1;
+        this.attackBonus = 0;
+        this.defenseBonus = 0;
+        this.onGround = true;
+        this.facingLeft = false;
+        this.isBlocking = false;
+        this.isAttacking = false;
+        this.isHit = false;
+        this.hitStunTimer = 0;
+        this.attackTimer = 0;
+        this.hitFlashTimer = 0;
+        this.comboCount = 0;
+        this.comboTimer = 0;
+        this.isDashing = false;
+        this.dashTimer = 0;
+        this.bobTimer = 0;
+        this.breatheScale = 1.0;
+        this.roundsWon = 0;
+        this.moves = new ArrayList<>();
+
+        // Load portrait
+        this.portrait = SpriteRenderer.loadCharacterPortrait(characterId);
+
+        // Initialize moves (subclass defines these)
+        initMoves();
+    }
+
+    /**
+     * Abstract: Each fighter defines its unique moveset.
+     */
+    protected abstract void initMoves();
+
+    /**
+     * Abstract: Each fighter has a unique special attack.
+     */
+    public abstract void performSpecial(Fighter target, ParticleSystem particles, HUD hud);
+
+    /**
+     * Abstract: Each fighter draws itself uniquely on canvas
+     * (procedural sprite + portrait overlay).
+     */
+    public abstract void drawSelf(GraphicsContext gc);
+
+    /**
+     * Abstract: Each fighter has unique primary attack visual.
+     */
+    public abstract Color getPrimaryColor();
+
+    /**
+     * Abstract: Each fighter has a unique aura color.
+     */
+    public abstract Color getAuraColor();
+
+    // --- Common Combat Methods ---
+
+    /**
+     * Performs a basic attack on the target.
+     */
+    public void performAttack(Fighter target, ParticleSystem particles, HUD hud, MoveType type) {
+        Move move = findMove(type);
+        if (move == null || !move.isReady()) return;
+        if (type.usesSpirit() && spirit < move.getSpiritCost()) return;
+
+        int totalDamage = move.getDamage() + attackBonus + (level * 2);
+
+        if (target.isBlocking) {
+            totalDamage = (int)(totalDamage * (1.0 - GameConfig.BLOCK_DAMAGE_REDUCTION));
+            particles.spawnFloatingText("BLOCKED!", target.x, target.y - 200, Color.LIGHTBLUE);
+            particles.spawnSparks(target.x, target.y - 100, Color.LIGHTBLUE, 8);
+        } else {
+            // Apply defense reduction
+            totalDamage = Math.max(1, totalDamage - target.defenseBonus);
+        }
+
+        target.takeDamage(totalDamage, particles);
+        target.applyKnockback(facingLeft ? -move.getKnockbackForce() : move.getKnockbackForce());
+
+        // Spirit cost
+        if (type.usesSpirit()) {
+            spirit -= move.getSpiritCost();
+        }
+
+        // Trigger cooldown
+        move.trigger();
+
+        // Screen effects
+        particles.triggerShake(type == MoveType.HEAVY_PUNCH || type == MoveType.HEAVY_KICK
+            ? GameConfig.SHAKE_INTENSITY_HEAVY : GameConfig.SHAKE_INTENSITY_LIGHT);
+
+        // Spawn effect particles
+        particles.spawnHitParticles(target.x, target.y - 100, move.getEffectColor(),
+            move.getParticleCount());
+
+        // Floating damage text
+        particles.spawnFloatingText("-" + totalDamage, target.x, target.y - 180,
+            totalDamage >= 25 ? Color.RED : Color.YELLOW);
+
+        // Combo tracking
+        comboCount++;
+        comboTimer = 0.6;
+        if (comboCount > 1) {
+            particles.spawnBigText(comboCount + " HIT COMBO!", x, y - 250, GameConfig.COLOR_GOLD);
+        }
+
+        // Attack animation
+        isAttacking = true;
+        attackTimer = 0.15;
+    }
+
+    /**
+     * Take damage, applying hit stun and flash.
+     */
+    public void takeDamage(int damage, ParticleSystem particles) {
+        hp = Math.max(0, hp - damage);
+        isHit = true;
+        hitStunTimer = 0.2;
+        hitFlashTimer = 0.15;
+    }
+
+    /**
+     * Apply knockback force.
+     */
+    public void applyKnockback(double force) {
+        velocityX += force;
+    }
+
+    /**
+     * Heal the fighter.
+     */
+    public void heal(int amount, ParticleSystem particles) {
+        int healAmount = Math.min(amount, maxHp - hp);
+        hp += healAmount;
+        if (particles != null) {
+            particles.spawnFloatingText("+" + healAmount + " SHIFA", x, y - 180, Color.LIME);
+            particles.spawnHealEffect(x, y - 80, 20);
+        }
+    }
+
+    // --- Physics & Update ---
+
+    public void update(double dt) {
+        // Update move cooldowns
+        for (Move m : moves) {
+            m.updateCooldown(dt);
+        }
+
+        // Gravity
+        if (!onGround) {
+            velocityY += GameConfig.GRAVITY * dt;
+            y += velocityY * dt;
+            if (y >= GameConfig.GROUND_Y) {
+                y = GameConfig.GROUND_Y;
+                velocityY = 0;
+                onGround = true;
+            }
+        }
+
+        // Horizontal movement (lerp + knockback)
+        if (isDashing) {
+            dashTimer -= dt;
+            if (dashTimer <= 0) isDashing = false;
+        }
+
+        x += velocityX * dt;
+        velocityX *= GameConfig.KNOCKBACK_DECAY;
+
+        // Lerp toward target
+        if (!isDashing && Math.abs(velocityX) < 50) {
+            x += (targetX - x) * GameConfig.LERP_SPEED;
+        }
+
+        // Keep in bounds
+        x = Math.max(60, Math.min(GameConfig.CANVAS_WIDTH - 60, x));
+
+        // Timers
+        if (hitStunTimer > 0) {
+            hitStunTimer -= dt;
+            if (hitStunTimer <= 0) isHit = false;
+        }
+        if (attackTimer > 0) {
+            attackTimer -= dt;
+            if (attackTimer <= 0) isAttacking = false;
+        }
+        if (hitFlashTimer > 0) {
+            hitFlashTimer -= dt;
+        }
+        if (comboTimer > 0) {
+            comboTimer -= dt;
+            if (comboTimer <= 0) comboCount = 0;
+        }
+
+        // Spirit regeneration
+        if (spirit < maxSpirit) {
+            spirit = Math.min(maxSpirit, spirit + 1);
+        }
+
+        // Bob animation
+        bobTimer += dt * 3;
+        breatheScale = 1.0 + Math.sin(bobTimer) * 0.02;
+    }
+
+    /**
+     * Draws the base fighter sprite using portrait image + procedural body.
+     * Subclasses can override drawSelf() for unique visuals.
+     */
+    protected void drawBase(GraphicsContext gc, Color bodyColor, Color armorColor) {
+        double drawX = x;
+        double drawY = y;
+        double bobY = Math.sin(bobTimer) * 3;
+
+        gc.save();
+        gc.translate(drawX, drawY + bobY);
+        if (facingLeft) gc.scale(-1, 1);
+
+        // Shadow on ground
+        gc.setFill(new Color(0, 0, 0, 0.3));
+        gc.fillOval(-40, -5, 80, 15);
+
+        // Legs with boots
+        gc.setFill(bodyColor.darker());
+        gc.fillRect(-20, -30, 15, 30);
+        gc.fillRect(5, -30, 15, 30);
+        // Boots
+        gc.setFill(bodyColor.darker().darker());
+        gc.fillRoundRect(-22, -5, 19, 10, 4, 4);
+        gc.fillRoundRect(3, -5, 19, 10, 4, 4);
+
+        // Body
+        gc.setFill(bodyColor);
+        gc.fillRoundRect(-30, -130, 60, 100, 10, 10);
+
+        // Armor/clothing overlay
+        gc.setFill(armorColor);
+        gc.fillRoundRect(-28, -125, 56, 50, 8, 8);
+
+        // Belt
+        gc.setFill(bodyColor.brighter());
+        gc.fillRect(-30, -35, 60, 5);
+        gc.setFill(new Color(1, 0.85, 0.2, 0.8));
+        gc.fillOval(-4, -36, 8, 7); // Belt buckle
+
+        // Arms
+        gc.setFill(bodyColor);
+        // Left arm
+        gc.fillRoundRect(-42, -120, 14, 50, 6, 6);
+        // Right arm - extend when attacking
+        if (isAttacking) {
+            gc.fillRoundRect(28, -130, 14, 55, 6, 6);
+        } else {
+            gc.fillRoundRect(28, -120, 14, 50, 6, 6);
+        }
+        // Hands (skin)
+        gc.setFill(Color.BISQUE);
+        gc.fillOval(-42, -72, 12, 12);
+        if (isAttacking) {
+            gc.fillOval(30, -78, 12, 12);
+        } else {
+            gc.fillOval(30, -72, 12, 12);
+        }
+
+        // Head
+        gc.setFill(Color.BISQUE);
+        gc.fillOval(-22, -170, 44, 44);
+
+        // Eyes
+        gc.setFill(Color.web("#2c1810"));
+        gc.fillOval(-10, -155, 7, 7);
+        gc.fillOval(5, -155, 7, 7);
+        // Eye whites
+        gc.setFill(Color.WHITE);
+        gc.fillOval(-9, -154, 5, 5);
+        gc.fillOval(6, -154, 5, 5);
+        // Pupils
+        gc.setFill(Color.BLACK);
+        gc.fillOval(-8, -153, 3, 3);
+        gc.fillOval(7, -153, 3, 3);
+
+        // Portrait on body (if available)
+        if (portrait != null) {
+            gc.drawImage(portrait, -45, -200, 90, 90);
+        }
+
+        // Hit flash overlay
+        if (hitFlashTimer > 0) {
+            gc.setFill(new Color(1, 1, 1, hitFlashTimer * 4));
+            gc.fillRoundRect(-30, -130, 60, 100, 10, 10);
+            gc.fillOval(-22, -170, 44, 44);
+        }
+
+        // Blocking shield effect
+        if (isBlocking) {
+            gc.setStroke(new Color(0.5, 0.8, 1.0, 0.6));
+            gc.setLineWidth(3);
+            gc.strokeOval(-50, -190, 100, 200);
+            // Shield icon
+            gc.setFill(new Color(0.5, 0.8, 1.0, 0.2));
+            gc.fillOval(-50, -190, 100, 200);
+        }
+
+        gc.restore();
+    }
+
+    // --- Utility Methods ---
+
+    public Move findMove(MoveType type) {
+        for (Move m : moves) {
+            if (m.getType() == type) return m;
+        }
+        return null;
+    }
+
+    public void jump() {
+        if (onGround) {
+            velocityY = GameConfig.JUMP_VELOCITY;
+            onGround = false;
+        }
+    }
+
+    public void dash(boolean left) {
+        isDashing = true;
+        dashTimer = GameConfig.DASH_DURATION;
+        velocityX = left ? -GameConfig.DASH_SPEED : GameConfig.DASH_SPEED;
+    }
+
+    public void resetForRound() {
+        hp = maxHp;
+        spirit = maxSpirit;
+        hitStunTimer = 0;
+        attackTimer = 0;
+        hitFlashTimer = 0;
+        comboCount = 0;
+        comboTimer = 0;
+        isBlocking = false;
+        isAttacking = false;
+        isHit = false;
+        isDashing = false;
+        velocityX = 0;
+        velocityY = 0;
+        onGround = true;
+        for (Move m : moves) {
+            // Reset cooldowns - using reflection-free approach
+        }
+    }
+
+    public void resetFull() {
+        resetForRound();
+        roundsWon = 0;
+        level = 1;
+        attackBonus = 0;
+        defenseBonus = 0;
+    }
+
+    public boolean isAlive() { return hp > 0; }
+
+    // --- Getters and Setters (Encapsulation) ---
+
+    public String getName() { return name; }
+    public String getCharacterId() { return characterId; }
+    public String getTitle() { return title; }
+    public int getIndex() { return index; }
+
+    public int getHp() { return hp; }
+    public void setHp(int hp) { this.hp = Math.max(0, Math.min(hp, maxHp)); }
+    public int getMaxHp() { return maxHp; }
+    public void setMaxHp(int maxHp) { this.maxHp = maxHp; this.hp = Math.min(hp, maxHp); }
+
+    public int getSpirit() { return spirit; }
+    public void setSpirit(int spirit) { this.spirit = Math.max(0, Math.min(spirit, maxSpirit)); }
+    public int getMaxSpirit() { return maxSpirit; }
+
+    public int getLevel() { return level; }
+    public void setLevel(int level) { this.level = level; }
+
+    public int getAttackBonus() { return attackBonus; }
+    public void setAttackBonus(int attackBonus) { this.attackBonus = attackBonus; }
+    public int getDefenseBonus() { return defenseBonus; }
+    public void setDefenseBonus(int defenseBonus) { this.defenseBonus = defenseBonus; }
+
+    public double getX() { return x; }
+    public void setX(double x) { this.x = x; this.targetX = x; }
+    public double getY() { return y; }
+    public void setY(double y) { this.y = y; }
+    public void setTargetX(double tx) { this.targetX = tx; }
+    public double getTargetX() { return targetX; }
+
+    public boolean isFacingLeft() { return facingLeft; }
+    public void setFacingLeft(boolean facingLeft) { this.facingLeft = facingLeft; }
+
+    public boolean isBlocking() { return isBlocking; }
+    public void setBlocking(boolean blocking) { this.isBlocking = blocking; }
+
+    public boolean isOnGround() { return onGround; }
+    public boolean isAttacking() { return isAttacking; }
+    public boolean isHit() { return isHit; }
+    public double getHitFlashTimer() { return hitFlashTimer; }
+
+    public int getRoundsWon() { return roundsWon; }
+    public void winRound() { roundsWon++; }
+
+    public int getComboCount() { return comboCount; }
+
+    public Image getPortrait() { return portrait; }
+    public List<Move> getMoves() { return moves; }
+}
+
+
+/* ==============================================================================
+   FILE: FightState.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.Image;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseButton;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+import java.util.ArrayList;
+import java.util.List;
+
+public class FightState extends GameState {
+
+    private Fighter p1, p2;
+    private Image background;
+    private double roundTimer = GameConfig.ROUND_TIME;
+    private int statePhase = 0; // 0=Intro, 1=Fight, 2=RoundEnd
+    private double phaseTimer = 0;
+    
+    // Systems
+    private ComboSystem p1Combo = new ComboSystem();
+    private ComboSystem p2Combo = new ComboSystem();
+    private AIController aiController;
+    
+    // P1 Inputs (Arrow keys)
+    private boolean p1Up, p1Down, p1Left, p1Right, p1Block;
+    // P2 Inputs (WASD for PvP)
+    private boolean p2Up, p2Down, p2Left, p2Right, p2Block;
+    
+    // Chat bubble system
+    private List<ChatBubble> activeBubbles = new ArrayList<>();
+    private double p1TauntCooldown = 0;
+    private double p2TauntCooldown = 0;
+    private static final double TAUNT_COOLDOWN = 6.0; // Seconds between random taunts
+    private double introBubbleTimer = 0;
+    private boolean introP1Shown = false;
+    private boolean introP2Shown = false;
+
+    public FightState(GameEngine engine) {
+        super(engine);
+    }
+
+    @Override
+    public void enter() {
+        p1 = engine.getPlayer1();
+        p2 = engine.getPlayer2();
+        
+        // Reset positions
+        p1.setX(200); p1.setY(GameConfig.GROUND_Y); p1.setTargetX(200); p1.setFacingLeft(false);
+        p2.setX(GameConfig.CANVAS_WIDTH - 200); p2.setY(GameConfig.GROUND_Y); p2.setTargetX(GameConfig.CANVAS_WIDTH - 200); p2.setFacingLeft(true);
+        
+        p1.resetForRound();
+        p2.resetForRound();
+        
+        background = SpriteRenderer.loadStageBackground(GameConfig.STAGE_IDS[engine.getStageIndex()]);
+        
+        roundTimer = GameConfig.ROUND_TIME;
+        statePhase = 0;
+        phaseTimer = 3.0; // 3 seconds intro (more time for chat bubbles)
+        
+        engine.getParticles().clear();
+        engine.getParticles().spawnBigText("ROUND " + (p1.getRoundsWon() + p2.getRoundsWon() + 1), GameConfig.CANVAS_WIDTH/2, GameConfig.CANVAS_HEIGHT/2, GameConfig.COLOR_GOLD);
+        
+        if (!engine.isPvP()) {
+            AIController.Difficulty diff = AIController.Difficulty.MEDIUM;
+            if (p2.getIndex() == 7) diff = AIController.Difficulty.BOSS; // Iblis
+            aiController = new AIController(diff);
+        }
+        
+        // Reset chat bubbles
+        activeBubbles.clear();
+        p1TauntCooldown = TAUNT_COOLDOWN;
+        p2TauntCooldown = TAUNT_COOLDOWN;
+        introBubbleTimer = 0;
+        introP1Shown = false;
+        introP2Shown = false;
+        
+        AudioManager.playSFX("round_start.wav");
+    }
+
+    @Override
+    public void exit() {
+    }
+
+    @Override
+    public void update(double dt) {
+        // Update chat bubbles (all phases)
+        updateChatBubbles(dt);
+        
+        if (statePhase == 0) {
+            // Intro phase - show character dialogue
+            phaseTimer -= dt;
+            introBubbleTimer += dt;
+            
+            // P1 intro bubble at 0.5s
+            if (!introP1Shown && introBubbleTimer > 0.5) {
+                introP1Shown = true;
+                spawnBubble(p1, ChatBubble.getIntroLine(p1.getIndex()), false, 2.5);
+            }
+            // P2 response at 1.5s
+            if (!introP2Shown && introBubbleTimer > 1.5) {
+                introP2Shown = true;
+                spawnBubble(p2, ChatBubble.getIntroResponse(p2.getIndex()), true, 2.0);
+            }
+            
+            if (phaseTimer <= 0) {
+                statePhase = 1;
+                activeBubbles.clear();
+                engine.getParticles().spawnBigText("FIGHT!", GameConfig.CANVAS_WIDTH/2, GameConfig.CANVAS_HEIGHT/2, Color.RED);
+            }
+        } else if (statePhase == 1) {
+            // Fighting
+            roundTimer -= dt;
+            if (roundTimer <= 0) {
+                roundTimer = 0;
+                timeOut();
+            }
+            
+            // Movement
+            handleMovement(dt);
+            
+            // AI
+            if (!engine.isPvP() && p2.isAlive() && p1.isAlive()) {
+                int action = aiController.update(dt, p2, p1);
+                if (action != 0) {
+                    aiController.executeAction(action, p2, p1, engine.getParticles(), engine.getHud());
+                    if (action >= 3 && action <= 5) p2Combo.registerHit();
+                }
+            }
+            
+            p1.update(dt);
+            p2.update(dt);
+            p1Combo.update(dt);
+            p2Combo.update(dt);
+            
+            // Random taunts during fight
+            p1TauntCooldown -= dt;
+            p2TauntCooldown -= dt;
+            if (p1TauntCooldown <= 0 && Math.random() < 0.3) {
+                spawnBubble(p1, ChatBubble.getRandomTaunt(p1.getIndex()), false, 2.5);
+                p1TauntCooldown = TAUNT_COOLDOWN + Math.random() * 4;
+            }
+            if (p2TauntCooldown <= 0 && Math.random() < 0.3) {
+                spawnBubble(p2, ChatBubble.getRandomTaunt(p2.getIndex()), true, 2.5);
+                p2TauntCooldown = TAUNT_COOLDOWN + Math.random() * 4;
+            }
+            
+            // Check win condition
+            if (!p1.isAlive() || !p2.isAlive()) {
+                statePhase = 2;
+                phaseTimer = 3.0;
+                engine.getParticles().triggerSlowMo(GameConfig.SLOW_MO_DURATION);
+                AudioManager.playSFX("ko.wav");
+                activeBubbles.clear();
+                
+                if (!p1.isAlive() && !p2.isAlive()) {
+                    engine.getParticles().spawnBigText("DOUBLE K.O.", GameConfig.CANVAS_WIDTH/2, GameConfig.CANVAS_HEIGHT/2, Color.WHITE);
+                } else if (!p2.isAlive()) {
+                    engine.getParticles().spawnBigText("K.O.", GameConfig.CANVAS_WIDTH/2, GameConfig.CANVAS_HEIGHT/2, GameConfig.COLOR_GOLD);
+                    p1.winRound();
+                    // Victory taunt
+                    spawnBubble(p1, ChatBubble.getRandomTaunt(p1.getIndex()), false, 3.0);
+                } else {
+                    engine.getParticles().spawnBigText("K.O.", GameConfig.CANVAS_WIDTH/2, GameConfig.CANVAS_HEIGHT/2, Color.RED);
+                    p2.winRound();
+                    // Victory taunt
+                    spawnBubble(p2, ChatBubble.getRandomTaunt(p2.getIndex()), true, 3.0);
+                }
+            }
+        } else if (statePhase == 2) {
+            // Round over
+            phaseTimer -= dt;
+            p1.update(dt);
+            p2.update(dt);
+            
+            if (phaseTimer <= 0) {
+                if (p1.getRoundsWon() >= GameConfig.ROUNDS_TO_WIN || p2.getRoundsWon() >= GameConfig.ROUNDS_TO_WIN) {
+                    // Match over
+                    engine.switchState("Victory");
+                } else {
+                    // Next round
+                    enter(); 
+                }
+            }
+        }
+        
+        // Update HUD
+        engine.getHud().update(dt, p1, p2);
+    }
+
+    private void handleMovement(double dt) {
+        // Face each other
+        if (p1.getX() < p2.getX()) {
+            p1.setFacingLeft(false);
+            p2.setFacingLeft(true);
+        } else {
+            p1.setFacingLeft(true);
+            p2.setFacingLeft(false);
+        }
+        
+        // P1 Movement (Arrow keys)
+        if (p1.isAlive() && p1.getHitFlashTimer() <= 0) {
+            p1.setBlocking(p1Block);
+            if (!p1Block) {
+                if (p1Left) p1.setTargetX(p1.getX() - GameConfig.MOVE_SPEED * dt);
+                if (p1Right) p1.setTargetX(p1.getX() + GameConfig.MOVE_SPEED * dt);
+                if (p1Up) p1.jump();
+            }
+        }
+        
+        // P2 Movement (WASD for PvP)
+        if (engine.isPvP() && p2.isAlive() && p2.getHitFlashTimer() <= 0) {
+            p2.setBlocking(p2Block);
+            if (!p2Block) {
+                if (p2Left) p2.setTargetX(p2.getX() - GameConfig.MOVE_SPEED * dt);
+                if (p2Right) p2.setTargetX(p2.getX() + GameConfig.MOVE_SPEED * dt);
+                if (p2Up) p2.jump();
+            }
+        }
+    }
+
+    private void timeOut() {
+        statePhase = 2;
+        phaseTimer = 3.0;
+        engine.getParticles().spawnBigText("TIME UP", GameConfig.CANVAS_WIDTH/2, GameConfig.CANVAS_HEIGHT/2, Color.WHITE);
+        if (p1.getHp() > p2.getHp()) {
+            p1.winRound();
+            p2.setHp(0);
+        } else if (p2.getHp() > p1.getHp()) {
+            p2.winRound();
+            p1.setHp(0);
+        } else {
+            // Draw
+        }
+    }
+
+    @Override
+    public void render(GraphicsContext gc) {
+        // Draw background
+        SpriteRenderer.drawBackground(gc, background);
+        
+        // Draw fighters
+        if (p1.isAlive() || p1.getHp() == 0) p1.drawSelf(gc); // Always draw P1
+        if (p2.isAlive() || p2.getHp() == 0) p2.drawSelf(gc); // Always draw P2
+        
+        // Draw chat bubbles above fighters
+        renderChatBubbles(gc);
+        
+        // Draw HUD
+        engine.getHud().render(gc, p1, p2, (int)Math.ceil(roundTimer), p1.getRoundsWon(), p2.getRoundsWon());
+        
+        // Draw control hints at bottom
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setFont(Font.font("Verdana", FontWeight.NORMAL, 12));
+        gc.setFill(new Color(1, 1, 1, 0.5));
+        gc.fillText("ARROWS: Move | LEFT CLICK: Attack | RIGHT CLICK: Special | SHIFT: Block | H: Heal", 
+            GameConfig.CANVAS_WIDTH / 2, GameConfig.CANVAS_HEIGHT - 10);
+    }
+
+    // --- Chat Bubble helpers ---
+    private void spawnBubble(Fighter fighter, String text, boolean isLeft, double lifetime) {
+        double bx = fighter.getX();
+        double by = fighter.getY() - 200; // Above the fighter head
+        Color border = isLeft ? fighter.getAuraColor() : fighter.getPrimaryColor();
+        activeBubbles.add(new ChatBubble(text, bx, by, isLeft, border, lifetime));
+    }
+    
+    private void updateChatBubbles(double dt) {
+        activeBubbles.removeIf(b -> !b.update(dt));
+        // Update bubble positions to follow fighters
+        // (We track by creation order: even index = P1 perspective, but simpler to just
+        //  let them stay at spawn position for clean rendering)
+    }
+    
+    private void renderChatBubbles(GraphicsContext gc) {
+        for (ChatBubble bubble : activeBubbles) {
+            bubble.render(gc);
+        }
+    }
+
+    // --- P1 attack helper ---
+    private void p1Attack(MoveType type) {
+        if (statePhase != 1 || !p1.isAlive() || p1Block) return;
+        p1.performAttack(p2, engine.getParticles(), engine.getHud(), type);
+        p1Combo.registerInput(KeyCode.A); // generic
+        if (p1.isAttacking() && p2.isHit()) {
+            p1Combo.registerHit();
+            if (p1Combo.getHitCount() > 1) engine.getHud().triggerComboScale();
+            // Chance for attack taunt
+            if (Math.random() < 0.15 && p1TauntCooldown <= 0) {
+                spawnBubble(p1, ChatBubble.getRandomTaunt(p1.getIndex()), false, 2.0);
+                p1TauntCooldown = TAUNT_COOLDOWN;
+            }
+        }
+    }
+
+    private void p1Special() {
+        if (statePhase != 1 || !p1.isAlive() || p1Block) return;
+        p1.performSpecial(p2, engine.getParticles(), engine.getHud());
+        p1Combo.registerInput(KeyCode.S);
+        if (p1.isAttacking() && p2.isHit()) {
+            p1Combo.registerHit();
+            if (p1Combo.getHitCount() > 1) engine.getHud().triggerComboScale();
+        }
+        // Always taunt on special
+        if (p1TauntCooldown <= 2) {
+            spawnBubble(p1, ChatBubble.getRandomTaunt(p1.getIndex()), false, 2.5);
+            p1TauntCooldown = TAUNT_COOLDOWN;
+        }
+    }
+
+    @Override
+    public void handleMousePressed(MouseButton button) {
+        if (statePhase != 1) return;
+        
+        if (button == MouseButton.PRIMARY) {
+            // Left click = Light Punch attack
+            p1Attack(MoveType.LIGHT_PUNCH);
+        } else if (button == MouseButton.SECONDARY) {
+            // Right click = Special attack
+            p1Special();
+        }
+    }
+
+    @Override
+    public void handleKeyPressed(KeyCode code) {
+        if (statePhase != 1) return; // Only accept inputs during fight
+        
+        // P1 Controls (Arrow keys + keyboard attacks)
+        if (p1.isAlive()) {
+            if (code == KeyCode.LEFT) p1Left = true;
+            if (code == KeyCode.RIGHT) p1Right = true;
+            if (code == KeyCode.UP) p1Up = true;
+            if (code == KeyCode.DOWN) p1Down = true;
+            if (code == KeyCode.SHIFT) p1Block = true;
+            
+            // Keyboard attack alternatives
+            if (!p1Block) {
+                if (code == KeyCode.Z) p1Attack(MoveType.LIGHT_PUNCH);
+                else if (code == KeyCode.X) p1Attack(MoveType.HEAVY_PUNCH);
+                else if (code == KeyCode.C) p1Attack(MoveType.LIGHT_KICK);
+                else if (code == KeyCode.V) p1Attack(MoveType.HEAVY_KICK);
+                else if (code == KeyCode.SPACE) p1Special();
+                else if (code == KeyCode.H) { p1.performAttack(p2, engine.getParticles(), engine.getHud(), MoveType.HEAL); p1Combo.registerInput(code); }
+            }
+        }
+        
+        // P2 Controls (WASD + QER) for PvP
+        if (engine.isPvP() && p2.isAlive()) {
+            if (code == KeyCode.A) p2Left = true;
+            if (code == KeyCode.D) p2Right = true;
+            if (code == KeyCode.W) p2Up = true;
+            if (code == KeyCode.S) p2Down = true;
+            if (code == KeyCode.F) p2Block = true;
+            
+            // Attacks
+            if (!p2Block) {
+                if (code == KeyCode.Q) { p2.performAttack(p1, engine.getParticles(), engine.getHud(), MoveType.LIGHT_PUNCH); p2Combo.registerInput(code); }
+                else if (code == KeyCode.E) { p2.performAttack(p1, engine.getParticles(), engine.getHud(), MoveType.HEAVY_PUNCH); p2Combo.registerInput(code); }
+                else if (code == KeyCode.R) { p2.performSpecial(p1, engine.getParticles(), engine.getHud()); p2Combo.registerInput(code); }
+                
+                if (code == KeyCode.Q || code == KeyCode.E || code == KeyCode.R) {
+                    if (p2.isAttacking() && p1.isHit()) {
+                        p2Combo.registerHit();
+                        if (p2Combo.getHitCount() > 1) engine.getHud().triggerComboScale();
+                    }
+                }
+            }
+        }
+    }
+
+    @Override
+    public void handleKeyReleased(KeyCode code) {
+        // P1 (Arrow keys)
+        if (code == KeyCode.LEFT) p1Left = false;
+        if (code == KeyCode.RIGHT) p1Right = false;
+        if (code == KeyCode.UP) p1Up = false;
+        if (code == KeyCode.DOWN) p1Down = false;
+        if (code == KeyCode.SHIFT) p1Block = false;
+        
+        // P2 (WASD)
+        if (code == KeyCode.A) p2Left = false;
+        if (code == KeyCode.D) p2Right = false;
+        if (code == KeyCode.W) p2Up = false;
+        if (code == KeyCode.S) p2Down = false;
+        if (code == KeyCode.F) p2Block = false;
+    }
+}
+
+
+/* ==============================================================================
+   FILE: GameConfig.java
+   =============================================================================*/
+
+import javafx.scene.paint.Color;
+
+/**
+ * GameConfig.java
+ * Central configuration class holding all game constants.
+ * Uses static final fields for easy access across the entire codebase.
+ * Demonstrates proper use of encapsulation and centralized configuration.
+ */
+public final class GameConfig {
+
+    private GameConfig() {} // Prevent instantiation
+
+    // --- WINDOW ---
+    public static final int WINDOW_WIDTH = 1100;
+    public static final int WINDOW_HEIGHT = 750;
+    public static final int CANVAS_WIDTH = 1100;
+    public static final int CANVAS_HEIGHT = 550;
+    public static final String GAME_TITLE = "JOSH-E-JUNG: TEKKEN EDITION";
+
+    // --- PHYSICS ---
+    public static final double GRAVITY = 1800.0;
+    public static final double GROUND_Y = 460.0;
+    public static final double LERP_SPEED = 0.12;
+    public static final double KNOCKBACK_DECAY = 0.92;
+    public static final double JUMP_VELOCITY = -700.0;
+    public static final double MOVE_SPEED = 350.0;
+    public static final double DASH_SPEED = 600.0;
+    public static final double DASH_DURATION = 0.2;
+
+    // --- COMBAT ---
+    public static final int ROUND_TIME = 99;
+    public static final int ROUNDS_TO_WIN = 2;
+    public static final int MAX_COMBO_WINDOW_MS = 500;
+    public static final double ATTACK_RANGE = 160.0;
+    public static final double BLOCK_DAMAGE_REDUCTION = 0.7;
+    public static final int HIT_STOP_FRAMES = 6;
+    public static final double SLOW_MO_DURATION = 0.6;
+    public static final double SLOW_MO_FACTOR = 0.25;
+
+    // --- SCREEN SHAKE ---
+    public static final double SHAKE_INTENSITY_LIGHT = 4.0;
+    public static final double SHAKE_INTENSITY_HEAVY = 12.0;
+    public static final double SHAKE_INTENSITY_KO = 25.0;
+    public static final double SHAKE_DECAY = 0.88;
+
+    // --- PARTICLES ---
+    public static final int MAX_PARTICLES = 500;
+    public static final double PARTICLE_GRAVITY = 400.0;
+
+    // --- CHARACTER DRAWING DIMENSIONS ---
+    public static final double CHAR_DRAW_WIDTH = 180.0;
+    public static final double CHAR_DRAW_HEIGHT = 280.0;
+    public static final double PORTRAIT_WIDTH = 120.0;
+    public static final double PORTRAIT_HEIGHT = 120.0;
+
+    // --- HP BAR ---
+    public static final double HP_BAR_WIDTH = 380.0;
+    public static final double HP_BAR_HEIGHT = 28.0;
+    public static final double SPIRIT_BAR_WIDTH = 200.0;
+    public static final double SPIRIT_BAR_HEIGHT = 12.0;
+
+    // --- COLORS ---
+    public static final Color COLOR_GOLD = Color.web("#f1c40f");
+    public static final Color COLOR_CRIMSON = Color.web("#e74c3c");
+    public static final Color COLOR_EMERALD = Color.web("#2ecc71");
+    public static final Color COLOR_AZURE = Color.web("#3498db");
+    public static final Color COLOR_AMETHYST = Color.web("#9b59b6");
+    public static final Color COLOR_DARK_BG = Color.web("#0a0a12");
+    public static final Color COLOR_PANEL_BG = Color.web("#1a1a2e");
+    public static final Color COLOR_PANEL_BORDER = Color.web("#16213e");
+    public static final Color COLOR_HP_GREEN = Color.web("#27ae60");
+    public static final Color COLOR_HP_YELLOW = Color.web("#f39c12");
+    public static final Color COLOR_HP_RED = Color.web("#c0392b");
+    public static final Color COLOR_SPIRIT_BLUE = Color.web("#2980b9");
+    public static final Color COLOR_HIT_FLASH = Color.web("#ffffffcc");
+
+    // --- ASSET PATHS ---
+    public static final String ASSETS_DIR = "assets/";
+    public static final String CHARACTERS_DIR = ASSETS_DIR + "characters/";
+    public static final String STAGES_DIR = ASSETS_DIR + "stages/";
+    public static final String UI_DIR = ASSETS_DIR + "ui/";
+    public static final String AUDIO_DIR = ASSETS_DIR + "audio/";
+
+    // --- CHARACTER FILE NAMES ---
+    public static final String[] CHARACTER_IDS = {
+        "al_murtaza", "noor_jahan", "peer_sahib", "marid",
+        "churail", "dev", "jinn", "iblis"
+    };
+
+    public static final String[] CHARACTER_NAMES = {
+        "AL-MURTAZA", "NOOR JAHAN", "PEER SAHIB", "MARID",
+        "CHURAIL", "DEV", "JINN", "IBLIS"
+    };
+
+    public static final String[] CHARACTER_TITLES = {
+        "The Sufi Warrior", "The Mughal Sorceress", "The Mystic Dervish",
+        "The Water Djinn", "The Ghost Witch", "The Stone Giant",
+        "The Fire Spirit", "The Dark Lord"
+    };
+
+    // --- STAGE NAMES ---
+    public static final String[] STAGE_IDS = {
+        "thar_desert", "mughal_garden", "haunted_haveli",
+        "jinn_lair", "iblis_throne"
+    };
+    public static final String[] STAGE_NAMES = {
+        "Thar Desert", "Mughal Garden", "Haunted Haveli",
+        "Jinn's Lair", "Iblis Throne Room"
+    };
+
+    // --- STORY MODE ---
+    public static final String[][] STORY_CHAPTERS = {
+        // Chapter 1: The Awakening
+        {
+            "Chapter I: The Awakening",
+            "In the ancient lands of Hindustan, darkness stirs...",
+            "The Sufi warrior Al-Murtaza receives a vision—\nevil forces gather under the command of Iblis.",
+            "He must journey through cursed lands,\ndefeat the forces of darkness,\nand restore balance to the realm.",
+            "His path begins in the scorching Thar Desert..."
+        },
+        // Chapter 2: The Gathering Storm
+        {
+            "Chapter II: The Gathering Storm",
+            "Having proven his strength in the desert,\nAl-Murtaza seeks allies for the battle ahead.",
+            "Noor Jahan, the Mughal Sorceress, joins his cause.\nPeer Sahib, the ancient mystic, offers wisdom.",
+            "But the forces of darkness grow stronger.\nThe Churail haunts the abandoned havelis,\nand the Dev guards the mountain passes.",
+            "The warriors must face them all..."
+        },
+        // Chapter 3: The Final Battle
+        {
+            "Chapter III: The Final Battle",
+            "The path to Iblis's throne room is revealed.\nThrough the underground lairs of the Jinn,\nthe warriors descend into the abyss.",
+            "Iblis awaits on his throne of black stone,\nsurrounded by rivers of fire and shadow.",
+            "This is the final battle.\nThe fate of all creation hangs in the balance.",
+            "PREPARE FOR THE ULTIMATE FIGHT!"
+        }
+    };
+
+    // --- GAME MODES ---
+    public static final int MODE_ARCADE = 0;
+    public static final int MODE_STORY = 1;
+    public static final int MODE_PVP = 2;
+}
+
+
+/* ==============================================================================
+   FILE: GameEngine.java
+   =============================================================================*/
+
+import javafx.scene.canvas.Canvas;
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseButton;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * GameEngine.java
+ * Central game controller managing state machine, game data, and transitions.
+ * Holds shared data between states (selected fighters, game mode, gold, etc.)
+ */
+public class GameEngine {
+
+    // State machine
+    private Map<String, GameState> states = new HashMap<>();
+    private GameState currentState;
+    private String currentStateName = "";
+
+    // Canvas reference
+    private Canvas canvas;
+    private GraphicsContext gc;
+
+    // Shared game data
+    private int gameMode = GameConfig.MODE_ARCADE; // 0=Arcade, 1=Story, 2=PvP
+    private int p1CharIndex = 0;
+    private int p2CharIndex = 3;
+    private Fighter player1;
+    private Fighter player2;
+    private int gold = 0;
+    private int currentStoryChapter = 0;
+    private int arcadeLevel = 1;
+    private int stageIndex = 0;
+    private boolean isPvP = false;
+
+    // Particle system (shared)
+    private ParticleSystem particles = new ParticleSystem();
+    private HUD hud = new HUD();
+
+    public GameEngine(Canvas canvas) {
+        this.canvas = canvas;
+        this.gc = canvas.getGraphicsContext2D();
+    }
+
+    /** Register a state with a name. */
+    public void addState(String name, GameState state) {
+        states.put(name, state);
+    }
+
+    /** Switch to a different state. */
+    public void switchState(String name) {
+        System.out.println("[GameEngine] Switching state to: " + name);
+        if (currentState != null) currentState.exit();
+        currentState = states.get(name);
+        currentStateName = name;
+        if (currentState != null) currentState.enter();
+        System.out.println("[GameEngine] Switched state to: " + name);
+    }
+
+    /** Update current state. */
+    public void update(double dt) {
+        if (currentState != null) {
+            double effectiveDt = dt * particles.getSlowMoFactor();
+            currentState.update(effectiveDt);
+            particles.update(effectiveDt);
+        }
+    }
+
+    /** Render current state. */
+    public void render() {
+        if (currentState != null) {
+            gc.save();
+            gc.translate(particles.getShakeX(), particles.getShakeY());
+            currentState.render(gc);
+            particles.render(gc);
+            gc.restore();
+        }
+    }
+
+    /** Route key events. */
+    public void handleKeyPressed(KeyCode code) {
+        if (currentState != null) currentState.handleKeyPressed(code);
+    }
+
+    public void handleKeyReleased(KeyCode code) {
+        if (currentState != null) currentState.handleKeyReleased(code);
+    }
+
+    public void handleMousePressed(MouseButton button) {
+        if (currentState != null) currentState.handleMousePressed(button);
+    }
+
+    /** Create a fighter instance by index. */
+    public static Fighter createFighter(int index) {
+        switch (index) {
+            case 0: return new SufiWarrior();
+            case 1: return new NoorJahan();
+            case 2: return new PeerSahib();
+            case 3: return new MaridFighter();
+            case 4: return new ChuralFighter();
+            case 5: return new DevFighter();
+            case 6: return new JinnFighter();
+            case 7: return new IblisFighter();
+            default: return new SufiWarrior();
+        }
+    }
+
+    // --- Getters/Setters for shared state ---
+    public Canvas getCanvas() { return canvas; }
+    public GraphicsContext getGc() { return gc; }
+    public ParticleSystem getParticles() { return particles; }
+    public HUD getHud() { return hud; }
+
+    public int getGameMode() { return gameMode; }
+    public void setGameMode(int mode) { this.gameMode = mode; this.isPvP = (mode == GameConfig.MODE_PVP); }
+
+    public int getP1CharIndex() { return p1CharIndex; }
+    public void setP1CharIndex(int i) { this.p1CharIndex = i; }
+    public int getP2CharIndex() { return p2CharIndex; }
+    public void setP2CharIndex(int i) { this.p2CharIndex = i; }
+
+    public Fighter getPlayer1() { return player1; }
+    public void setPlayer1(Fighter f) { this.player1 = f; }
+    public Fighter getPlayer2() { return player2; }
+    public void setPlayer2(Fighter f) { this.player2 = f; }
+
+    public int getGold() { return gold; }
+    public void setGold(int g) { this.gold = g; }
+    public void addGold(int amount) { this.gold += amount; }
+
+    public int getCurrentStoryChapter() { return currentStoryChapter; }
+    public void setCurrentStoryChapter(int c) { this.currentStoryChapter = c; }
+
+    public int getArcadeLevel() { return arcadeLevel; }
+    public void setArcadeLevel(int l) { this.arcadeLevel = l; }
+
+    public int getStageIndex() { return stageIndex; }
+    public void setStageIndex(int s) { this.stageIndex = s; }
+
+    public boolean isPvP() { return isPvP; }
+    public String getCurrentStateName() { return currentStateName; }
+}
+
+
+/* ==============================================================================
+   FILE: GameState.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseButton;
+
+/**
+ * GameState.java
+ * Abstract base class for all game screens/states.
+ * Implements the State design pattern for clean screen transitions.
+ * Each state manages its own update, render, and input logic.
+ */
+public abstract class GameState {
+
+    protected GameEngine engine;
+
+    public GameState(GameEngine engine) {
+        this.engine = engine;
+    }
+
+    /** Called when this state becomes active. */
+    public abstract void enter();
+
+    /** Called when leaving this state. */
+    public abstract void exit();
+
+    /** Update game logic. */
+    public abstract void update(double dt);
+
+    /** Render to canvas. */
+    public abstract void render(GraphicsContext gc);
+
+    /** Handle key pressed. */
+    public abstract void handleKeyPressed(KeyCode code);
+
+    /** Handle key released. */
+    public void handleKeyReleased(KeyCode code) {
+        // Default: do nothing. Subclasses override if needed.
+    }
+
+    /** Handle mouse pressed. */
+    public void handleMousePressed(MouseButton button) {
+        // Default: do nothing. Subclasses override if needed.
+    }
+}
+
+
+/* ==============================================================================
+   FILE: HUD.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+import javafx.scene.paint.LinearGradient;
+import javafx.scene.paint.CycleMethod;
+import javafx.scene.paint.Stop;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+
+/**
+ * HUD.java - Tekken-style Heads-Up Display rendered on canvas.
+ * Slanted health bars, spirit meters, round indicators, timer, combo counter.
+ */
+public class HUD {
+    private double p1HpD = 1.0, p2HpD = 1.0, p1SpD = 1.0, p2SpD = 1.0;
+    private double comboScale = 1.0;
+
+    public void update(double dt, Fighter p1, Fighter p2) {
+        p1HpD += ((double)p1.getHp()/p1.getMaxHp() - p1HpD) * 0.08;
+        p2HpD += ((double)p2.getHp()/p2.getMaxHp() - p2HpD) * 0.08;
+        p1SpD += ((double)p1.getSpirit()/p1.getMaxSpirit() - p1SpD) * 0.1;
+        p2SpD += ((double)p2.getSpirit()/p2.getMaxSpirit() - p2SpD) * 0.1;
+        if (comboScale > 1.0) comboScale -= dt * 3;
+        if (comboScale < 1.0) comboScale = 1.0;
+    }
+
+    public void render(GraphicsContext gc, Fighter p1, Fighter p2, int timer, int p1R, int p2R) {
+        double W = GameConfig.CANVAS_WIDTH;
+        double barW = GameConfig.HP_BAR_WIDTH, barH = GameConfig.HP_BAR_HEIGHT;
+
+        // Top bar bg
+        gc.setFill(new Color(0,0,0,0.7));
+        gc.fillRect(0,0,W,90);
+
+        // HP bars
+        drawHpBar(gc, 30, 18, barW, barH, p1HpD, false);
+        drawHpBar(gc, W-30-barW, 18, barW, barH, p2HpD, true);
+
+        // Spirit bars
+        drawSpiritBar(gc, 30, 55, 200, 12, p1SpD, p1.getSpirit());
+        drawSpiritBar(gc, W-230, 55, 200, 12, p2SpD, p2.getSpirit());
+
+        // Timer
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setFont(Font.font("Impact", FontWeight.BOLD, 56));
+        gc.setFill(new Color(0,0,0,0.8));
+        gc.fillOval(W/2-38, 5, 76, 70);
+        gc.setStroke(GameConfig.COLOR_GOLD); gc.setLineWidth(2);
+        gc.strokeOval(W/2-38, 5, 76, 70);
+        gc.setFill(timer <= 10 ? Color.RED : GameConfig.COLOR_GOLD);
+        gc.fillText(String.valueOf(timer), W/2, 58);
+
+        // Round dots
+        drawRounds(gc, W/2-90, 80, p1R);
+        drawRounds(gc, W/2+50, 80, p2R);
+
+        // Names
+        gc.setFont(Font.font("Verdana", FontWeight.BOLD, 13));
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.setFill(Color.WHITE);
+        gc.fillText(p1.getName(), 32, 13);
+        gc.setTextAlign(TextAlignment.RIGHT);
+        gc.fillText(p2.getName(), W-32, 13);
+
+        // Combos
+        if(p1.getComboCount()>1) drawCombo(gc, 50, 150, p1.getComboCount());
+        if(p2.getComboCount()>1) drawCombo(gc, W-170, 150, p2.getComboCount());
+        gc.setTextAlign(TextAlignment.LEFT);
+    }
+
+    private void drawHpBar(GraphicsContext gc, double x, double y, double w, double h, double fill, boolean mirror) {
+        gc.setFill(new Color(0.2,0.15,0.05,0.8));
+        gc.fillRect(x-2,y-2,w+4,h+4);
+        gc.setStroke(GameConfig.COLOR_GOLD); gc.setLineWidth(2);
+        gc.strokeRect(x-2,y-2,w+4,h+4);
+        gc.setFill(Color.web("#2c0000"));
+        gc.fillRect(x,y,w,h);
+        Color hc = fill>0.5?GameConfig.COLOR_HP_GREEN:fill>0.25?GameConfig.COLOR_HP_YELLOW:GameConfig.COLOR_HP_RED;
+        gc.setFill(new LinearGradient(0,0,0,1,true,CycleMethod.NO_CYCLE,
+            new Stop(0,hc.brighter()),new Stop(0.5,hc),new Stop(1,hc.darker())));
+        double fw = Math.max(0, w*fill);
+        if(mirror) gc.fillRect(x+w-fw,y,fw,h); else gc.fillRect(x,y,fw,h);
+        gc.setFill(new Color(1,1,1,0.15));
+        if(mirror) gc.fillRect(x+w-fw,y,fw,h/3); else gc.fillRect(x,y,fw,h/3);
+    }
+
+    private void drawSpiritBar(GraphicsContext gc, double x, double y, double w, double h, double fill, int val) {
+        gc.setFill(new Color(0,0,0.15,0.7));
+        gc.fillRect(x,y,w,h);
+        gc.setFill(new LinearGradient(0,0,1,0,true,CycleMethod.NO_CYCLE,
+            new Stop(0,GameConfig.COLOR_SPIRIT_BLUE),new Stop(1,Color.web("#1abc9c"))));
+        gc.fillRect(x,y,w*fill,h);
+        gc.setStroke(new Color(0.2,0.6,0.9,0.6)); gc.setLineWidth(1);
+        gc.strokeRect(x,y,w,h);
+        gc.setFont(Font.font("Verdana",FontWeight.BOLD,9));
+        gc.setFill(Color.WHITE); gc.setTextAlign(TextAlignment.LEFT);
+        gc.fillText("SP:"+val, x+4, y+h-2);
+    }
+
+    private void drawRounds(GraphicsContext gc, double x, double y, int won) {
+        for(int i=0;i<GameConfig.ROUNDS_TO_WIN;i++){
+            gc.setFill(i<won?GameConfig.COLOR_GOLD:new Color(0.3,0.3,0.3,0.6));
+            gc.fillOval(x+i*22,y,14,14);
+            gc.setStroke(GameConfig.COLOR_GOLD.darker()); gc.setLineWidth(1);
+            gc.strokeOval(x+i*22,y,14,14);
+        }
+    }
+
+    private void drawCombo(GraphicsContext gc, double x, double y, int count) {
+        gc.save(); gc.translate(x+60,y); gc.scale(comboScale,comboScale);
+        gc.setFont(Font.font("Impact",FontWeight.BOLD,36));
+        gc.setFill(GameConfig.COLOR_GOLD); gc.setTextAlign(TextAlignment.CENTER);
+        gc.fillText(count+" HIT",0,0);
+        gc.setFont(Font.font("Impact",FontWeight.BOLD,20));
+        gc.fillText("COMBO!",0,28);
+        gc.restore();
+    }
+
+    public void triggerComboScale() { comboScale = 1.5; }
+}
+
+
+/* ==============================================================================
+   FILE: IblisFighter.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+
+/**
+ * IblisFighter.java - IBLIS (The Dark Lord)
+ * FINAL BOSS. The ultimate evil from Islamic mythology.
+ * Highest stats, devastating attacks, unique boss mechanics.
+ * Implements Spellcaster and Curseable.
+ */
+public class IblisFighter extends Fighter implements Spellcaster, Curseable {
+
+    private boolean cursed = false;
+
+    public IblisFighter() {
+        super("IBLIS", "iblis", "The Dark Lord", 7, 180, 120);
+    }
+
+    @Override
+    protected void initMoves() {
+        moves.add(new Move("Shadow Strike", MoveType.LIGHT_PUNCH, 14, 0, Color.DARKRED));
+        moves.add(new Move("Doom Fist", MoveType.HEAVY_PUNCH, 26, 0, Color.CRIMSON));
+        moves.add(new Move("Hell Kick", MoveType.LIGHT_KICK, 15, 0, Color.ORANGERED));
+        moves.add(new Move("Infernal Kick", MoveType.HEAVY_KICK, 28, 0, Color.MAROON));
+        moves.add(new Move("Hellfire Rain", MoveType.SPECIAL, 55, 30, Color.DARKRED));
+        moves.add(new Move("Apocalypse", MoveType.SUPER, 80, 70, Color.BLACK));
+        moves.add(new Move("Dark Regen", MoveType.HEAL, 0, 25, Color.DARKRED));
+    }
+
+    @Override
+    public void performSpecial(Fighter target, ParticleSystem particles, HUD hud) {
+        if (getSpirit() < 30) return;
+        int dmg = 55 + getLevel() * 5 + getAttackBonus();
+        if (target.isBlocking()) dmg = (int)(dmg * 0.3);
+        target.takeDamage(dmg, particles);
+        target.applyKnockback(isFacingLeft() ? -55 : 55);
+        setSpirit(getSpirit() - 30);
+        particles.spawnBigText("HELLFIRE RAIN!", getX(), getY() - 240, Color.DARKRED);
+        particles.spawnFloatingText("-" + dmg, target.getX(), target.getY() - 180, Color.RED);
+        // Massive fire burst
+        particles.spawnFireBurst(target.getX(), target.getY() - 60, 40);
+        particles.spawnSparks(target.getX(), target.getY() - 100, Color.RED, 20);
+        // Fire from above
+        for (int i = 0; i < 5; i++) {
+            particles.spawnFireBurst(target.getX() + (i - 2) * 40,
+                target.getY() - 200, 8);
+        }
+        particles.triggerShake(GameConfig.SHAKE_INTENSITY_KO);
+        particles.triggerHitFlash(Color.DARKRED);
+        particles.triggerSlowMo(0.4);
+        AudioManager.playSFX("special.wav");
+    }
+
+    @Override public void castSpell(Fighter t, ParticleSystem p, HUD h) { performSpecial(t, p, h); }
+    @Override public int getSpellDamage() { return 55; }
+    @Override public String getSpellName() { return "Hellfire Rain"; }
+
+    @Override
+    public void applyCurse(Fighter target, ParticleSystem particles) {
+        cursed = true;
+        particles.spawnFloatingText("DOOMED!", target.getX(), target.getY() - 200, Color.DARKRED);
+    }
+    @Override public void removeCurse() { cursed = false; }
+    @Override public boolean isCursed() { return cursed; }
+    @Override public int getCurseDamagePerSecond() { return 8; }
+
+    @Override
+    public void drawSelf(GraphicsContext gc) {
+        gc.save();
+        gc.translate(x, y + Math.sin(bobTimer) * 2);
+        if (facingLeft) gc.scale(-1, 1);
+
+        // Dark aura behind
+        gc.setFill(new Color(0.3, 0, 0, 0.08 + Math.sin(bobTimer) * 0.04));
+        gc.fillOval(-80, -270, 160, 290);
+
+        // Shadow
+        gc.setFill(new Color(0, 0, 0, 0.5));
+        gc.fillOval(-55, -5, 110, 20);
+
+        // Dark wings - spread wider during attack
+        double wingSpread = isAttacking ? 1.3 : 1.0;
+        gc.setFill(new Color(0.1, 0, 0, 0.5));
+        gc.fillPolygon(
+            new double[]{-40, -90 * wingSpread, -65 * wingSpread, -55},
+            new double[]{-140, -210, -110, -80}, 4);
+        gc.fillPolygon(
+            new double[]{40, 90 * wingSpread, 65 * wingSpread, 55},
+            new double[]{-140, -210, -110, -80}, 4);
+        // Wing membrane veins
+        gc.setStroke(new Color(0.5, 0, 0, 0.3));
+        gc.setLineWidth(1);
+        gc.strokeLine(-42, -140, -75 * wingSpread, -180);
+        gc.strokeLine(-45, -120, -70 * wingSpread, -150);
+        gc.strokeLine(42, -140, 75 * wingSpread, -180);
+        gc.strokeLine(45, -120, 70 * wingSpread, -150);
+
+        // Large dark body
+        gc.setFill(Color.web("#1a0000"));
+        gc.fillRoundRect(-45, -170, 90, 155, 12, 12);
+
+        // Armor plates
+        gc.setFill(Color.web("#2a0000"));
+        gc.fillRoundRect(-38, -160, 76, 30, 6, 6);
+        gc.fillRoundRect(-35, -90, 70, 25, 6, 6);
+
+        // Lava cracks on body - pulsing
+        double lavaGlow = 0.6 + Math.sin(bobTimer * 2) * 0.3;
+        gc.setStroke(new Color(1, 0.3, 0, lavaGlow));
+        gc.setLineWidth(2);
+        gc.strokeLine(-20, -140, -5, -100);
+        gc.strokeLine(5, -150, 20, -110);
+        gc.strokeLine(-10, -80, 10, -50);
+        gc.strokeLine(-25, -110, -15, -70);
+        gc.strokeLine(15, -130, 25, -90);
+
+        // Head
+        gc.setFill(Color.BLACK);
+        gc.fillOval(-30, -220, 60, 55);
+
+        // Horns with gradient
+        gc.setFill(Color.web("#3a0000"));
+        gc.fillPolygon(new double[]{-25, -35, -15}, new double[]{-215, -265, -215}, 3);
+        gc.fillPolygon(new double[]{25, 35, 15}, new double[]{-215, -265, -215}, 3);
+        // Horn tips glow
+        gc.setFill(new Color(1, 0.2, 0, 0.5));
+        gc.fillOval(-38, -268, 8, 8);
+        gc.fillOval(30, -268, 8, 8);
+
+        // Burning eyes
+        double eyeIntensity = isAttacking ? 1.0 : 0.9 + Math.sin(bobTimer * 5) * 0.1;
+        gc.setFill(new Color(1, 0.4, 0, eyeIntensity));
+        gc.fillOval(-15, -205, 12, 10);
+        gc.fillOval(5, -205, 12, 10);
+        // Eye glow radius
+        gc.setFill(new Color(1, 0.3, 0, 0.2));
+        gc.fillOval(-18, -208, 18, 16);
+        gc.fillOval(2, -208, 18, 16);
+
+        // Fire crown
+        for (int i = 0; i < 7; i++) {
+            double fx = -24 + i * 8 + Math.sin(bobTimer * 3 + i) * 3;
+            double flameH = 12 + Math.sin(bobTimer * 4 + i * 0.7) * 5;
+            gc.setFill(new Color(0.9, 0.3, 0, 0.5));
+            gc.fillOval(fx, -245 - flameH, 6, flameH);
+            gc.setFill(new Color(1, 0.6, 0, 0.3));
+            gc.fillOval(fx + 1, -243 - flameH * 0.7, 4, flameH * 0.7);
+        }
+
+        // Attack: fire fists
+        if (isAttacking) {
+            gc.setFill(new Color(1, 0.4, 0, 0.6));
+            gc.fillOval(40, -140, 25, 25);
+            gc.setFill(new Color(1, 0.7, 0, 0.4));
+            gc.fillOval(45, -135, 15, 15);
+            // Fire trail
+            for (int i = 0; i < 4; i++) {
+                gc.setFill(new Color(1, 0.3, 0, 0.3 - i * 0.07));
+                gc.fillOval(35 - i * 8, -138 + i * 3, 12, 12);
+            }
+        }
+
+        // Legs
+        gc.setFill(Color.web("#0a0000"));
+        gc.fillRect(-28, -15, 20, 20);
+        gc.fillRect(8, -15, 20, 20);
+
+        // Portrait overlay
+        if (getPortrait() != null) {
+            gc.drawImage(getPortrait(), -50, -260, 100, 100);
+        }
+
+        // Hit flash
+        if (hitFlashTimer > 0) {
+            gc.setFill(new Color(1, 1, 1, hitFlashTimer * 4));
+            gc.fillRoundRect(-45, -170, 90, 155, 12, 12);
+        }
+
+        gc.restore();
+    }
+
+    @Override public Color getPrimaryColor() { return Color.DARKRED; }
+    @Override public Color getAuraColor() { return Color.RED; }
+}
+
+
+/* ==============================================================================
+   FILE: Item.java
+   =============================================================================*/
+
+/**
+ * Item.java
+ * Abstract base class for all items in the game.
+ * Demonstrates abstract class with abstract method.
+ * Concrete subclasses: Weapon, Potion, Taweez
+ */
+public abstract class Item {
+    protected String name;
+    protected int cost;
+    protected String description;
+
+    public Item(String name, int cost, String description) {
+        this.name = name;
+        this.cost = cost;
+        this.description = description;
+    }
+
+    public abstract void use(Fighter target);
+
+    public String getName() { return name; }
+    public int getCost() { return cost; }
+    public String getDescription() { return description; }
+
+    @Override
+    public String toString() {
+        return name + " (" + cost + "g) - " + description;
+    }
+}
+
+class Weapon extends Item {
+    private int damageBoost;
+
+    public Weapon(String name, int cost, int damageBoost) {
+        super(name, cost, "+" + damageBoost + " Attack Power");
+        this.damageBoost = damageBoost;
+    }
+
+    @Override
+    public void use(Fighter target) {
+        target.setAttackBonus(target.getAttackBonus() + damageBoost);
+    }
+
+    public int getDamageBoost() { return damageBoost; }
+}
+
+class Potion extends Item {
+    private int healAmount;
+
+    public Potion(String name, int cost, int healAmount) {
+        super(name, cost, "Restores " + healAmount + " HP");
+        this.healAmount = healAmount;
+    }
+
+    @Override
+    public void use(Fighter target) {
+        target.setHp(target.getHp() + healAmount);
+    }
+
+    public int getHealAmount() { return healAmount; }
+}
+
+class Taweez extends Item {
+    private int defenseBoost;
+
+    public Taweez(String name, int cost, int defenseBoost) {
+        super(name, cost, "+" + defenseBoost + " Defense");
+        this.defenseBoost = defenseBoost;
+    }
+
+    @Override
+    public void use(Fighter target) {
+        target.setDefenseBonus(target.getDefenseBonus() + defenseBoost);
+    }
+
+    public int getDefenseBoost() { return defenseBoost; }
+}
+
+
+/* ==============================================================================
+   FILE: JinnFighter.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+
+/**
+ * JinnFighter.java - JINN (Fire Spirit)
+ * Fast agile villain made of smokeless fire.
+ * High speed, moderate damage, fire-based attacks.
+ */
+public class JinnFighter extends Fighter implements Spellcaster {
+
+    public JinnFighter() {
+        super("JINN", "jinn", "The Fire Spirit", 6, 90, 95);
+    }
+
+    @Override
+    protected void initMoves() {
+        moves.add(new Move("Fire Jab", MoveType.LIGHT_PUNCH, 11, 0, Color.ORANGERED));
+        moves.add(new Move("Inferno Punch", MoveType.HEAVY_PUNCH, 21, 0, Color.RED));
+        moves.add(new Move("Flame Kick", MoveType.LIGHT_KICK, 12, 0, Color.ORANGE));
+        moves.add(new Move("Blaze Kick", MoveType.HEAVY_KICK, 23, 0, Color.DARKRED));
+        moves.add(new Move("Smokeless Fire", MoveType.SPECIAL, 43, 30, Color.ORANGERED));
+        moves.add(new Move("Hellfire Storm", MoveType.SUPER, 62, 60, Color.DARKRED));
+        moves.add(new Move("Ember Heal", MoveType.HEAL, 0, 20, Color.ORANGE));
+    }
+
+    @Override
+    public void performSpecial(Fighter target, ParticleSystem particles, HUD hud) {
+        if (getSpirit() < 30) return;
+        int dmg = 43 + getLevel() * 3 + getAttackBonus();
+        if (target.isBlocking()) dmg = (int)(dmg * 0.3);
+        target.takeDamage(dmg, particles);
+        target.applyKnockback(isFacingLeft() ? -35 : 35);
+        setSpirit(getSpirit() - 30);
+        particles.spawnBigText("SMOKELESS FIRE!", getX(), getY() - 220, Color.ORANGERED);
+        particles.spawnFloatingText("-" + dmg, target.getX(), target.getY() - 180, Color.RED);
+        particles.spawnFireBurst(target.getX(), target.getY() - 60, 30);
+        particles.triggerShake(GameConfig.SHAKE_INTENSITY_HEAVY);
+        particles.triggerHitFlash(Color.ORANGERED);
+        AudioManager.playSFX("special.wav");
+    }
+
+    @Override public void castSpell(Fighter t, ParticleSystem p, HUD h) { performSpecial(t, p, h); }
+    @Override public int getSpellDamage() { return 43; }
+    @Override public String getSpellName() { return "Smokeless Fire"; }
+
+    @Override
+    public void drawSelf(GraphicsContext gc) {
+        gc.save();
+        gc.translate(x, y + Math.sin(bobTimer) * 3);
+        if (facingLeft) gc.scale(-1, 1);
+        // Shadow
+        gc.setFill(new Color(0, 0, 0, 0.3));
+        gc.fillOval(-35, -5, 70, 15);
+        // Fiery body (semi-transparent)
+        gc.setFill(new Color(0.8, 0.2, 0, 0.85));
+        gc.fillOval(-30, -130, 60, 120);
+        // Inner fire
+        gc.setFill(new Color(1, 0.5, 0, 0.6 + Math.sin(bobTimer * 4) * 0.2));
+        gc.fillOval(-20, -120, 40, 90);
+        // Head
+        gc.setFill(Color.DARKRED);
+        gc.fillOval(-22, -170, 44, 44);
+        // Flame eyes
+        gc.setFill(new Color(1, 0.8, 0, 0.9));
+        gc.fillOval(-12, -158, 10, 8);
+        gc.fillOval(4, -158, 10, 8);
+        // Fire emanating from body
+        for (int i = 0; i < 4; i++) {
+            double fx = -25 + i * 15 + Math.sin(bobTimer * 3 + i) * 8;
+            double fy = -140 - i * 8 + Math.cos(bobTimer * 4 + i) * 5;
+            gc.setFill(new Color(1, 0.6, 0, 0.4));
+            gc.fillOval(fx, fy, 12, 18);
+        }
+        // Smoke wisps
+        gc.setFill(new Color(0.3, 0.3, 0.3, 0.2));
+        gc.fillOval(-40, -160, 25, 35);
+        gc.fillOval(20, -150, 20, 30);
+        // Portrait overlay
+        if (getPortrait() != null) {
+            gc.drawImage(getPortrait(), -45, -210, 90, 90);
+        }
+        // Hit flash
+        if (hitFlashTimer > 0) {
+            gc.setFill(new Color(1, 1, 1, hitFlashTimer * 4));
+            gc.fillOval(-30, -130, 60, 120);
+        }
+        gc.restore();
+    }
+
+    @Override public Color getPrimaryColor() { return Color.DARKRED; }
+    @Override public Color getAuraColor() { return Color.ORANGERED; }
+}
+
+
+/* ==============================================================================
+   FILE: Main.java
+   =============================================================================*/
+
+import javafx.animation.AnimationTimer;
+import javafx.application.Application;
+import javafx.scene.Scene;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.layout.StackPane;
+import javafx.stage.Stage;
+
+/**
+ * Main.java
+ * The core entry point for Josh-e-Jung.
+ * Re-written from the monolithic script to cleanly initialize the GameEngine
+ * and start the game loop.
+ */
+public class Main extends Application {
+
+    private GameEngine engine;
+    private long lastTime;
+
+    @Override
+    public void start(Stage primaryStage) {
+        primaryStage.setTitle(GameConfig.GAME_TITLE);
+
+        // Setup Canvas and Scene
+        Canvas canvas = new Canvas(GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+        StackPane root = new StackPane(canvas);
+        Scene scene = new Scene(root);
+
+        // Generate procedural sound effects if missing
+        SoundGenerator.generateAll();
+
+        // Initialize Audio and Engine
+        AudioManager.preloadAll();
+        engine = new GameEngine(canvas);
+
+        // Register States
+        engine.addState("Menu", new MenuState(engine));
+        engine.addState("CharSelect", new CharSelectState(engine));
+        engine.addState("VSScreen", new VSScreenState(engine));
+        engine.addState("Fight", new FightState(engine));
+        engine.addState("Victory", new VictoryState(engine));
+        engine.addState("Shop", new ShopState(engine));
+        engine.addState("Story", new StoryState(engine));
+
+        // Input Handling
+        scene.setOnKeyPressed(e -> engine.handleKeyPressed(e.getCode()));
+        scene.setOnKeyReleased(e -> engine.handleKeyReleased(e.getCode()));
+        scene.setOnMousePressed(e -> engine.handleMousePressed(e.getButton()));
+
+        // Start Initial State
+        engine.switchState("Menu");
+
+        // Game Loop
+        lastTime = System.nanoTime();
+        AnimationTimer timer = new AnimationTimer() {
+            @Override
+            public void handle(long now) {
+                try {
+                    double dt = (now - lastTime) / 1_000_000_000.0;
+                    lastTime = now;
+                    
+                    // Cap delta time to prevent physics issues on lag spikes
+                    if (dt > 0.1) dt = 0.1;
+
+                    engine.update(dt);
+                    
+                    // Clear canvas before render
+                    engine.getGc().clearRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+                    engine.render();
+                } catch (Throwable t) {
+                    System.err.println("CRASH IN GAME LOOP:");
+                    t.printStackTrace();
+                    try {
+                        java.io.PrintWriter pw = new java.io.PrintWriter("crash_log.txt");
+                        t.printStackTrace(pw);
+                        pw.close();
+                    } catch (Exception e) {}
+                    stop(); // Stop the timer on crash
+                }
+            }
+        };
+
+        primaryStage.setScene(scene);
+        primaryStage.setResizable(false);
+        primaryStage.show();
+        
+        timer.start();
+    }
+
+    public static void main(String[] args) {
+        launch(args);
+    }
+}
+
+
+/* ==============================================================================
+   FILE: MaridFighter.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+
+/**
+ * MaridFighter.java - MARID (Water Djinn)
+ * Powerful water-based villain with strong knockback.
+ * High HP, moderate spirit, devastating water attacks.
+ */
+public class MaridFighter extends Fighter {
+
+    public MaridFighter() {
+        super("MARID", "marid", "The Water Djinn", 3, 120, 80);
+    }
+
+    @Override
+    protected void initMoves() {
+        moves.add(new Move("Water Fist", MoveType.LIGHT_PUNCH, 12, 0, Color.AQUA));
+        moves.add(new Move("Tidal Slam", MoveType.HEAVY_PUNCH, 22, 0, Color.DARKCYAN));
+        moves.add(new Move("Wave Kick", MoveType.LIGHT_KICK, 13, 0, Color.AQUAMARINE));
+        moves.add(new Move("Tsunami Kick", MoveType.HEAVY_KICK, 24, 0, Color.TEAL));
+        moves.add(new Move("Tidal Crush", MoveType.SPECIAL, 42, 30, Color.AQUA));
+        moves.add(new Move("Abyssal Flood", MoveType.SUPER, 58, 60, Color.DARKBLUE));
+        moves.add(new Move("Water Heal", MoveType.HEAL, 0, 20, Color.AQUAMARINE));
+    }
+
+    @Override
+    public void performSpecial(Fighter target, ParticleSystem particles, HUD hud) {
+        if (getSpirit() < 30) return;
+        int dmg = 42 + getLevel() * 3 + getAttackBonus();
+        if (target.isBlocking()) dmg = (int)(dmg * 0.3);
+        target.takeDamage(dmg, particles);
+        target.applyKnockback(isFacingLeft() ? -50 : 50);
+        setSpirit(getSpirit() - 30);
+        particles.spawnBigText("TIDAL CRUSH!", getX(), getY() - 220, Color.AQUA);
+        particles.spawnFloatingText("-" + dmg, target.getX(), target.getY() - 180, Color.RED);
+        for (int i = 0; i < 30; i++) {
+            particles.spawnHitParticles(target.getX(), target.getY() - 60, Color.AQUA, 3);
+        }
+        particles.triggerShake(GameConfig.SHAKE_INTENSITY_HEAVY);
+        particles.triggerHitFlash(Color.AQUA);
+        AudioManager.playSFX("special.wav");
+    }
+
+    @Override
+    public void drawSelf(GraphicsContext gc) {
+        drawBase(gc, Color.DARKCYAN, Color.web("#1a5a5a"));
+        gc.save();
+        gc.translate(x, y + Math.sin(bobTimer) * 3);
+        if (facingLeft) gc.scale(-1, 1);
+        // Tusks
+        gc.setFill(Color.IVORY);
+        gc.fillRect(-18, -155, 5, 15);
+        gc.fillRect(13, -155, 5, 15);
+        // Water swirls
+        gc.setFill(new Color(0, 1, 1, 0.3 + Math.sin(bobTimer * 2) * 0.2));
+        gc.fillOval(-50, -100, 30, 30);
+        gc.fillOval(25, -120, 25, 25);
+        // Chains
+        gc.setStroke(Color.DARKGOLDENROD); gc.setLineWidth(3);
+        gc.strokeLine(-35, -80, -45, -50);
+        gc.strokeLine(35, -80, 45, -50);
+        gc.restore();
+    }
+
+    @Override public Color getPrimaryColor() { return Color.DARKCYAN; }
+    @Override public Color getAuraColor() { return Color.AQUA; }
+}
+
+
+/* ==============================================================================
+   FILE: MenuState.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.Image;
+import javafx.scene.input.KeyCode;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+
+public class MenuState extends GameState {
+
+    private String[] options = {"ARCADE MODE", "STORY MODE", "VS MODE"};
+    private int selectedIndex = 0;
+    private Image background;
+    private double titleScale = 1.0;
+    private boolean titleScalingUp = true;
+
+    public MenuState(GameEngine engine) {
+        super(engine);
+    }
+
+    @Override
+    public void enter() {
+        background = SpriteRenderer.loadImage(GameConfig.UI_DIR + "title_background.png");
+        engine.getParticles().clear();
+        // Spawn some embers
+        for (int i = 0; i < 50; i++) {
+            engine.getParticles().spawnSparks(
+                Math.random() * GameConfig.CANVAS_WIDTH,
+                GameConfig.CANVAS_HEIGHT,
+                Color.ORANGE, 1
+            );
+        }
+        AudioManager.playBGM("menu_bgm.wav");
+    }
+
+    @Override
+    public void exit() {
+        engine.getParticles().clear();
+    }
+
+    @Override
+    public void update(double dt) {
+
+        // Animate title
+        if (titleScalingUp) {
+            titleScale += dt * 0.1;
+            if (titleScale > 1.05) titleScalingUp = false;
+        } else {
+            titleScale -= dt * 0.1;
+            if (titleScale < 0.95) titleScalingUp = true;
+        }
+
+        // Randomly spawn more embers
+        if (Math.random() < 0.1) {
+            engine.getParticles().spawnSparks(
+                Math.random() * GameConfig.CANVAS_WIDTH,
+                GameConfig.CANVAS_HEIGHT,
+                Color.GOLD, 2
+            );
+        }
+    }
+
+    @Override
+    public void render(GraphicsContext gc) {
+        // Draw Background
+        SpriteRenderer.drawBackground(gc, background);
+
+        // Draw Title
+        gc.save();
+        gc.translate(GameConfig.CANVAS_WIDTH / 2, 150);
+        gc.scale(titleScale, titleScale);
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setFont(Font.font("Impact", FontWeight.BOLD, 72));
+        
+        // Shadow
+        gc.setFill(new Color(0, 0, 0, 0.8));
+        gc.fillText(GameConfig.GAME_TITLE, 5, 5);
+        
+        // Main Text
+        gc.setFill(GameConfig.COLOR_GOLD);
+        gc.fillText(GameConfig.GAME_TITLE, 0, 0);
+        gc.setStroke(Color.DARKRED);
+        gc.setLineWidth(2);
+        gc.strokeText(GameConfig.GAME_TITLE, 0, 0);
+        gc.restore();
+
+        // Draw Options
+        gc.setFont(Font.font("Verdana", FontWeight.BOLD, 36));
+        for (int i = 0; i < options.length; i++) {
+            double y = 350 + i * 70;
+            if (i == selectedIndex) {
+                gc.setFill(Color.WHITE);
+                gc.fillText("> " + options[i] + " <", GameConfig.CANVAS_WIDTH / 2, y);
+            } else {
+                gc.setFill(Color.GRAY);
+                gc.fillText(options[i], GameConfig.CANVAS_WIDTH / 2, y);
+            }
+        }
+
+        // Instructions
+        gc.setFont(Font.font("Verdana", FontWeight.NORMAL, 16));
+        gc.setFill(Color.WHITE);
+        gc.fillText("Use UP/DOWN arrows to navigate. Press ENTER to select.", 
+            GameConfig.CANVAS_WIDTH / 2, GameConfig.CANVAS_HEIGHT - 30);
+    }
+
+    @Override
+    public void handleKeyPressed(KeyCode code) {
+        if (code == KeyCode.UP) {
+            selectedIndex--;
+            if (selectedIndex < 0) selectedIndex = options.length - 1;
+            AudioManager.playSFX("hit_light.wav");
+        } else if (code == KeyCode.DOWN) {
+            selectedIndex++;
+            if (selectedIndex >= options.length) selectedIndex = 0;
+            AudioManager.playSFX("hit_light.wav");
+        } else if (code == KeyCode.ENTER) {
+            AudioManager.playSFX("special.wav");
+            engine.setGameMode(selectedIndex);
+            engine.switchState("CharSelect");
+        }
+    }
+}
+
+
+/* ==============================================================================
+   FILE: Move.java
+   =============================================================================*/
+
+import javafx.scene.paint.Color;
+
+/**
+ * Move.java
+ * Represents a single combat move with all its properties.
+ * Used by Fighter subclasses to define their unique movesets.
+ * Demonstrates composition (Move HAS-A MoveType).
+ */
+public class Move {
+    private final String name;
+    private final MoveType type;
+    private final int damage;
+    private final int spiritCost;
+    private final double range;
+    private final double knockbackForce;
+    private final double cooldownTime;
+    private final Color effectColor;
+    private final int particleCount;
+    private final String soundFile;
+
+    private double cooldownRemaining = 0;
+
+    public Move(String name, MoveType type, int damage, int spiritCost,
+                double range, double knockbackForce, Color effectColor,
+                int particleCount, String soundFile) {
+        this.name = name;
+        this.type = type;
+        this.damage = damage;
+        this.spiritCost = spiritCost;
+        this.range = range;
+        this.knockbackForce = knockbackForce;
+        this.cooldownTime = type.getCooldown();
+        this.effectColor = effectColor;
+        this.particleCount = particleCount;
+        this.soundFile = soundFile;
+    }
+
+    // Convenience constructor for simple moves
+    public Move(String name, MoveType type, int damage, int spiritCost, Color effectColor) {
+        this(name, type, damage, spiritCost, GameConfig.ATTACK_RANGE,
+             type.getKnockback(), effectColor, 10, null);
+    }
+
+    public boolean isReady() {
+        return cooldownRemaining <= 0;
+    }
+
+    public void trigger() {
+        cooldownRemaining = cooldownTime;
+    }
+
+    public void updateCooldown(double dt) {
+        if (cooldownRemaining > 0) {
+            cooldownRemaining -= dt;
+        }
+    }
+
+    public double getCooldownPercent() {
+        if (cooldownTime <= 0) return 0;
+        return Math.max(0, cooldownRemaining / cooldownTime);
+    }
+
+    // Getters
+    public String getName() { return name; }
+    public MoveType getType() { return type; }
+    public int getDamage() { return damage; }
+    public int getSpiritCost() { return spiritCost; }
+    public double getRange() { return range; }
+    public double getKnockbackForce() { return knockbackForce; }
+    public Color getEffectColor() { return effectColor; }
+    public int getParticleCount() { return particleCount; }
+    public String getSoundFile() { return soundFile; }
+
+    @Override
+    public String toString() {
+        return name + " (" + type.getDisplayName() + ") DMG:" + damage;
+    }
+}
+
+
+/* ==============================================================================
+   FILE: MoveType.java
+   =============================================================================*/
+
+/**
+ * MoveType.java
+ * Enum representing the different types of combat moves.
+ * Each type has base properties that modify damage calculation.
+ * Demonstrates proper enum usage with fields and constructors.
+ */
+public enum MoveType {
+    LIGHT_PUNCH("Light Punch", 8, 0.3, 5.0, false),
+    HEAVY_PUNCH("Heavy Punch", 15, 0.6, 15.0, false),
+    LIGHT_KICK("Light Kick", 10, 0.35, 8.0, false),
+    HEAVY_KICK("Heavy Kick", 18, 0.7, 20.0, false),
+    SPECIAL("Special", 30, 1.0, 30.0, true),
+    SUPER("Super", 50, 1.5, 45.0, true),
+    GRAB("Grab", 20, 0.8, 10.0, false),
+    BLOCK("Block", 0, 0.0, 0.0, false),
+    HEAL("Heal", 0, 0.5, 0.0, true);
+
+    private final String displayName;
+    private final int baseDamage;
+    private final double cooldown;     // seconds
+    private final double knockback;
+    private final boolean usesSpirit;
+
+    MoveType(String displayName, int baseDamage, double cooldown,
+             double knockback, boolean usesSpirit) {
+        this.displayName = displayName;
+        this.baseDamage = baseDamage;
+        this.cooldown = cooldown;
+        this.knockback = knockback;
+        this.usesSpirit = usesSpirit;
+    }
+
+    public String getDisplayName() { return displayName; }
+    public int getBaseDamage() { return baseDamage; }
+    public double getCooldown() { return cooldown; }
+    public double getKnockback() { return knockback; }
+    public boolean usesSpirit() { return usesSpirit; }
+}
+
+
+/* ==============================================================================
+   FILE: NoorJahan.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+
+/**
+ * NoorJahan.java - NOOR JAHAN
+ * The Mughal Sorceress - powerful ranged spellcaster.
+ * Implements Spellcaster and Curseable interfaces.
+ * High spirit, lower HP, devastating magical attacks.
+ */
+public class NoorJahan extends Fighter implements Spellcaster, Curseable {
+
+    private boolean cursed = false;
+    private int curseDps = 5;
+
+    public NoorJahan() {
+        super("NOOR JAHAN", "noor_jahan", "The Mughal Sorceress", 1, 85, 120);
+    }
+
+    @Override
+    protected void initMoves() {
+        moves.add(new Move("Arcane Slap", MoveType.LIGHT_PUNCH, 8, 0, Color.PURPLE));
+        moves.add(new Move("Mystic Blast", MoveType.HEAVY_PUNCH, 18, 5, Color.MEDIUMPURPLE));
+        moves.add(new Move("Energy Kick", MoveType.LIGHT_KICK, 10, 0, Color.ORCHID));
+        moves.add(new Move("Void Kick", MoveType.HEAVY_KICK, 20, 5, Color.DARKVIOLET));
+        moves.add(new Move("Nazar-e-Bad", MoveType.SPECIAL, 45, 35, Color.PURPLE));
+        moves.add(new Move("Mughal Storm", MoveType.SUPER, 65, 70, Color.MAGENTA));
+        moves.add(new Move("Restoration", MoveType.HEAL, 0, 15, Color.LIME));
+    }
+
+    @Override
+    public void performSpecial(Fighter target, ParticleSystem particles, HUD hud) {
+        if (getSpirit() < 35) {
+            particles.spawnFloatingText("LOW SPIRIT!", getX(), getY() - 200, Color.CYAN);
+            return;
+        }
+        int dmg = 45 + getLevel() * 4 + getAttackBonus();
+        if (target.isBlocking()) dmg = (int)(dmg * 0.3);
+        target.takeDamage(dmg, particles);
+        target.applyKnockback(isFacingLeft() ? -35 : 35);
+        setSpirit(getSpirit() - 35);
+        particles.spawnBigText("NAZAR-E-BAD!", getX(), getY() - 220, Color.PURPLE);
+        particles.spawnFloatingText("-" + dmg, target.getX(), target.getY() - 180, Color.RED);
+        particles.spawnLightningBolt(getX(), getY() - 150, target.getX(), target.getY() - 100);
+        particles.spawnAura(target.getX(), target.getY() - 80, Color.PURPLE, 20);
+        particles.triggerShake(GameConfig.SHAKE_INTENSITY_HEAVY);
+        particles.triggerHitFlash(Color.PURPLE);
+        AudioManager.playSFX("special.wav");
+    }
+
+    @Override public void castSpell(Fighter t, ParticleSystem p, HUD h) { performSpecial(t, p, h); }
+    @Override public int getSpellDamage() { return 45; }
+    @Override public String getSpellName() { return "Nazar-e-Bad"; }
+
+    @Override
+    public void applyCurse(Fighter target, ParticleSystem particles) {
+        cursed = true;
+        particles.spawnFloatingText("CURSED!", target.getX(), target.getY() - 200, Color.DARKVIOLET);
+        particles.spawnAura(target.getX(), target.getY() - 80, Color.DARKVIOLET, 15);
+    }
+    @Override public void removeCurse() { cursed = false; }
+    @Override public boolean isCursed() { return cursed; }
+    @Override public int getCurseDamagePerSecond() { return curseDps; }
+
+    @Override
+    public void drawSelf(GraphicsContext gc) {
+        drawBase(gc, Color.INDIGO, Color.web("#4a1a6a"));
+        gc.save();
+        gc.translate(x, y + Math.sin(bobTimer) * 3);
+        if (facingLeft) gc.scale(-1, 1);
+
+        // Flowing dupatta (scarf)
+        gc.setFill(new Color(0.6, 0.1, 0.8, 0.3));
+        double scarfWave = Math.sin(bobTimer * 2) * 8;
+        gc.fillRect(-35, -170, 6, 50 + scarfWave);
+        gc.fillRect(-38, -120, 4, 30 + scarfWave);
+
+        // Crown/headpiece with jewels
+        gc.setFill(Color.GOLD);
+        gc.fillRect(-18, -178, 36, 6);
+        gc.setFill(Color.web("#FFD700"));
+        gc.fillOval(-8, -188, 16, 14);
+        gc.setFill(Color.web("#FF00FF"));
+        gc.fillOval(-4, -185, 8, 8); // Central jewel
+        // Side jewels
+        gc.setFill(Color.web("#9400D3"));
+        gc.fillOval(-16, -182, 6, 6);
+        gc.fillOval(10, -182, 6, 6);
+
+        // Magical orb in hand - animate forward when attacking
+        double orbX = isAttacking ? 55 : 32;
+        double orbY = isAttacking ? -110 : -90;
+        double orbSize = isAttacking ? 28 : 20;
+        double orbPulse = Math.sin(bobTimer * 3) * 0.2;
+        gc.setFill(new Color(0.6, 0.2, 0.8, 0.5 + orbPulse));
+        gc.fillOval(orbX, orbY, orbSize, orbSize);
+        // Inner glow
+        gc.setFill(new Color(1, 0.5, 1, 0.4 + orbPulse));
+        gc.fillOval(orbX + orbSize * 0.2, orbY + orbSize * 0.2, orbSize * 0.6, orbSize * 0.6);
+        // White sparkle
+        gc.setFill(new Color(1, 1, 1, 0.6));
+        gc.fillOval(orbX + 4, orbY + 3, 5, 5);
+
+        // Attack magic trail
+        if (isAttacking) {
+            for (int i = 0; i < 3; i++) {
+                double trailX = orbX - 10 - i * 12;
+                double trailAlpha = 0.3 - i * 0.1;
+                gc.setFill(new Color(0.8, 0.2, 1.0, trailAlpha));
+                gc.fillOval(trailX, orbY + 5, 10, 10);
+            }
+        }
+
+        // Mystical aura
+        gc.setFill(new Color(0.5, 0.1, 0.7, 0.05 + Math.sin(bobTimer * 2) * 0.03));
+        gc.fillOval(-55, -200, 110, 220);
+
+        gc.restore();
+    }
+
+    @Override public Color getPrimaryColor() { return Color.INDIGO; }
+    @Override public Color getAuraColor() { return Color.PURPLE; }
+}
+
+
+/* ==============================================================================
+   FILE: ParticleSystem.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Random;
+
+/**
+ * ParticleSystem.java
+ * Enhanced particle engine with multiple emitter types.
+ * Handles floating text, particle effects (fire, lightning, smoke, healing),
+ * screen shake, and cinematic effects.
+ */
+public class ParticleSystem {
+
+    // --- Inner Classes ---
+    public static class FloatingText {
+        String text;
+        double x, y;
+        Color color;
+        double opacity;
+        double scale;
+        double vx, vy;
+        boolean isBig;
+
+        public FloatingText(String text, double x, double y, Color color, boolean isBig) {
+            this.text = text;
+            this.x = x;
+            this.y = y;
+            this.color = color;
+            this.opacity = 1.0;
+            this.scale = isBig ? 2.0 : 1.0;
+            this.vx = 0;
+            this.vy = -60;
+            this.isBig = isBig;
+        }
+
+        public void update(double dt) {
+            x += vx * dt;
+            y += vy * dt;
+            opacity -= dt * 0.8;
+            if (isBig && scale > 1.0) scale -= dt * 1.5;
+        }
+
+        public boolean isDead() {
+            return opacity <= 0;
+        }
+    }
+
+    public static class Particle {
+        double x, y;
+        double vx, vy;
+        Color color;
+        double life;
+        double maxLife;
+        double size;
+        boolean hasGravity;
+        boolean isSpark;
+
+        public Particle(double x, double y, Color color, double size,
+                        double vx, double vy, double life, boolean hasGravity) {
+            this.x = x;
+            this.y = y;
+            this.color = color;
+            this.size = size;
+            this.vx = vx;
+            this.vy = vy;
+            this.life = life;
+            this.maxLife = life;
+            this.hasGravity = hasGravity;
+            this.isSpark = false;
+        }
+
+        public void update(double dt) {
+            x += vx * dt;
+            y += vy * dt;
+            if (hasGravity) vy += GameConfig.PARTICLE_GRAVITY * dt;
+            life -= dt;
+            if (isSpark) size *= 0.97;
+        }
+
+        public boolean isDead() {
+            return life <= 0 || size < 0.5;
+        }
+
+        public double getOpacity() {
+            return Math.max(0, Math.min(1, life / maxLife));
+        }
+    }
+
+    // --- Fields ---
+    private List<FloatingText> floatingTexts = new ArrayList<>();
+    private List<Particle> particles = new ArrayList<>();
+    private Random random = new Random();
+
+    // Screen shake
+    private double shakeX = 0, shakeY = 0;
+    private double shakeIntensity = 0;
+
+    // Hit flash
+    private double hitFlashOpacity = 0;
+    private Color hitFlashColor = Color.WHITE;
+
+    // Slow motion
+    private double slowMoTimer = 0;
+    private boolean isSlowMo = false;
+
+    // --- Methods ---
+
+    public void update(double dt) {
+        // Update floating texts
+        Iterator<FloatingText> ftIt = floatingTexts.iterator();
+        while (ftIt.hasNext()) {
+            FloatingText ft = ftIt.next();
+            ft.update(dt);
+            if (ft.isDead()) ftIt.remove();
+        }
+
+        // Update particles (cap at max)
+        Iterator<Particle> pIt = particles.iterator();
+        while (pIt.hasNext()) {
+            Particle p = pIt.next();
+            p.update(dt);
+            if (p.isDead()) pIt.remove();
+        }
+
+        // Decay screen shake
+        if (shakeIntensity > 0.1) {
+            shakeX = (random.nextDouble() - 0.5) * shakeIntensity * 2;
+            shakeY = (random.nextDouble() - 0.5) * shakeIntensity * 2;
+            shakeIntensity *= GameConfig.SHAKE_DECAY;
+        } else {
+            shakeX = 0;
+            shakeY = 0;
+            shakeIntensity = 0;
+        }
+
+        // Decay hit flash
+        if (hitFlashOpacity > 0) {
+            hitFlashOpacity -= dt * 8;
+        }
+
+        // Slow motion timer
+        if (isSlowMo) {
+            slowMoTimer -= dt;
+            if (slowMoTimer <= 0) isSlowMo = false;
+        }
+    }
+
+    public void render(GraphicsContext gc) {
+        // Render particles
+        for (Particle p : particles) {
+            double alpha = p.getOpacity();
+            gc.setFill(new Color(
+                p.color.getRed(), p.color.getGreen(), p.color.getBlue(),
+                Math.max(0, Math.min(1, alpha))
+            ));
+            if (p.isSpark) {
+                gc.save();
+                gc.translate(p.x, p.y);
+                gc.rotate(Math.atan2(p.vy, p.vx) * 180 / Math.PI);
+                gc.fillRect(-p.size, -1, p.size * 2, 2);
+                gc.restore();
+            } else {
+                gc.fillOval(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+            }
+        }
+
+        // Render floating texts
+        for (FloatingText ft : floatingTexts) {
+            double alpha = Math.max(0, Math.min(1, ft.opacity));
+            gc.setFont(javafx.scene.text.Font.font("Impact", javafx.scene.text.FontWeight.BOLD,
+                ft.isBig ? (int)(36 * ft.scale) : 22));
+            // Shadow
+            gc.setFill(new Color(0, 0, 0, alpha * 0.7));
+            gc.fillText(ft.text, ft.x - 28, ft.y + 2);
+            // Main text
+            gc.setFill(new Color(
+                ft.color.getRed(), ft.color.getGreen(), ft.color.getBlue(), alpha
+            ));
+            gc.fillText(ft.text, ft.x - 30, ft.y);
+        }
+
+        // Render hit flash overlay
+        if (hitFlashOpacity > 0) {
+            gc.setFill(new Color(
+                hitFlashColor.getRed(), hitFlashColor.getGreen(),
+                hitFlashColor.getBlue(), Math.min(0.4, hitFlashOpacity)
+            ));
+            gc.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+        }
+    }
+
+    // --- Spawn Methods ---
+
+    public void spawnFloatingText(String text, double x, double y, Color color) {
+        floatingTexts.add(new FloatingText(text, x, y, color, false));
+    }
+
+    public void spawnBigText(String text, double x, double y, Color color) {
+        floatingTexts.add(new FloatingText(text, x, y, color, true));
+    }
+
+    public void spawnHitParticles(double x, double y, Color color, int count) {
+        for (int i = 0; i < count && particles.size() < GameConfig.MAX_PARTICLES; i++) {
+            double angle = random.nextDouble() * Math.PI * 2;
+            double speed = 100 + random.nextDouble() * 300;
+            Particle p = new Particle(
+                x + (random.nextDouble() - 0.5) * 20,
+                y + (random.nextDouble() - 0.5) * 20,
+                color, 4 + random.nextDouble() * 6,
+                Math.cos(angle) * speed,
+                Math.sin(angle) * speed,
+                0.3 + random.nextDouble() * 0.5,
+                true
+            );
+            particles.add(p);
+        }
+    }
+
+    public void spawnSparks(double x, double y, Color color, int count) {
+        for (int i = 0; i < count && particles.size() < GameConfig.MAX_PARTICLES; i++) {
+            double angle = random.nextDouble() * Math.PI * 2;
+            double speed = 200 + random.nextDouble() * 500;
+            Particle p = new Particle(
+                x, y, color, 8 + random.nextDouble() * 12,
+                Math.cos(angle) * speed,
+                Math.sin(angle) * speed,
+                0.2 + random.nextDouble() * 0.3,
+                false
+            );
+            p.isSpark = true;
+            particles.add(p);
+        }
+    }
+
+    public void spawnFireBurst(double x, double y, int count) {
+        Color[] fireColors = {Color.ORANGERED, Color.ORANGE, Color.YELLOW, Color.DARKRED};
+        for (int i = 0; i < count && particles.size() < GameConfig.MAX_PARTICLES; i++) {
+            Color c = fireColors[random.nextInt(fireColors.length)];
+            double angle = -Math.PI / 2 + (random.nextDouble() - 0.5) * Math.PI;
+            double speed = 80 + random.nextDouble() * 200;
+            Particle p = new Particle(
+                x + (random.nextDouble() - 0.5) * 30,
+                y,
+                c, 5 + random.nextDouble() * 10,
+                Math.cos(angle) * speed,
+                Math.sin(angle) * speed - 100,
+                0.5 + random.nextDouble() * 0.8,
+                false
+            );
+            particles.add(p);
+        }
+    }
+
+    public void spawnHealEffect(double x, double y, int count) {
+        for (int i = 0; i < count && particles.size() < GameConfig.MAX_PARTICLES; i++) {
+            Particle p = new Particle(
+                x + (random.nextDouble() - 0.5) * 60,
+                y + random.nextDouble() * 40,
+                Color.LIME, 4 + random.nextDouble() * 6,
+                (random.nextDouble() - 0.5) * 30,
+                -80 - random.nextDouble() * 120,
+                0.8 + random.nextDouble() * 0.7,
+                false
+            );
+            particles.add(p);
+        }
+    }
+
+    public void spawnLightningBolt(double x1, double y1, double x2, double y2) {
+        int segments = 8;
+        double dx = (x2 - x1) / segments;
+        double dy = (y2 - y1) / segments;
+        for (int i = 0; i < segments; i++) {
+            double px = x1 + dx * i + (random.nextDouble() - 0.5) * 20;
+            double py = y1 + dy * i + (random.nextDouble() - 0.5) * 20;
+            Particle p = new Particle(px, py, Color.CYAN, 3, 0, 0, 0.3, false);
+            particles.add(p);
+            // Branch sparks
+            if (random.nextDouble() > 0.5) {
+                Particle s = new Particle(px, py, Color.WHITE, 6,
+                    (random.nextDouble() - 0.5) * 200, (random.nextDouble() - 0.5) * 200,
+                    0.15, false);
+                s.isSpark = true;
+                particles.add(s);
+            }
+        }
+    }
+
+    public void spawnAura(double x, double y, Color color, int count) {
+        for (int i = 0; i < count && particles.size() < GameConfig.MAX_PARTICLES; i++) {
+            double angle = random.nextDouble() * Math.PI * 2;
+            double radius = 30 + random.nextDouble() * 40;
+            Particle p = new Particle(
+                x + Math.cos(angle) * radius,
+                y + Math.sin(angle) * radius,
+                color, 3 + random.nextDouble() * 4,
+                Math.cos(angle) * 20,
+                -50 - random.nextDouble() * 80,
+                0.5 + random.nextDouble() * 0.5,
+                false
+            );
+            particles.add(p);
+        }
+    }
+
+    // --- Screen Effects ---
+
+    public void triggerShake(double intensity) {
+        this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
+    }
+
+    public void triggerHitFlash(Color color) {
+        this.hitFlashOpacity = 1.0;
+        this.hitFlashColor = color;
+    }
+
+    public void triggerSlowMo(double duration) {
+        this.isSlowMo = true;
+        this.slowMoTimer = duration;
+    }
+
+    // --- Getters ---
+
+    public double getShakeX() { return shakeX; }
+    public double getShakeY() { return shakeY; }
+    public boolean isSlowMo() { return isSlowMo; }
+    public double getSlowMoFactor() { return isSlowMo ? GameConfig.SLOW_MO_FACTOR : 1.0; }
+
+    public void clear() {
+        floatingTexts.clear();
+        particles.clear();
+        shakeIntensity = 0;
+        shakeX = 0;
+        shakeY = 0;
+        hitFlashOpacity = 0;
+        isSlowMo = false;
+    }
+}
+
+
+/* ==============================================================================
+   FILE: PeerSahib.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+
+/**
+ * PeerSahib.java - PEER SAHIB
+ * The Mystic Dervish - healer/support with strong defense.
+ * Implements Spellcaster and ShieldBearer interfaces.
+ * High HP, strong healing, whirling dervish attacks.
+ */
+public class PeerSahib extends Fighter implements Spellcaster, ShieldBearer {
+
+    private boolean shielded = false;
+
+    public PeerSahib() {
+        super("PEER SAHIB", "peer_sahib", "The Mystic Dervish", 2, 110, 90);
+    }
+
+    @Override
+    protected void initMoves() {
+        moves.add(new Move("Staff Tap", MoveType.LIGHT_PUNCH, 8, 0, Color.WHITE));
+        moves.add(new Move("Staff Slam", MoveType.HEAVY_PUNCH, 18, 0, Color.WHEAT));
+        moves.add(new Move("Sufi Kick", MoveType.LIGHT_KICK, 9, 0, Color.ANTIQUEWHITE));
+        moves.add(new Move("Whirl Kick", MoveType.HEAVY_KICK, 19, 0, Color.BISQUE));
+        moves.add(new Move("Dervish Whirl", MoveType.SPECIAL, 35, 25, Color.WHITE));
+        moves.add(new Move("Divine Light", MoveType.SUPER, 55, 55, Color.LIGHTYELLOW));
+        moves.add(new Move("Greater Shifa", MoveType.HEAL, 0, 15, Color.LIME));
+    }
+
+    @Override
+    public void performSpecial(Fighter target, ParticleSystem particles, HUD hud) {
+        if (getSpirit() < 25) {
+            particles.spawnFloatingText("LOW SPIRIT!", getX(), getY() - 200, Color.CYAN);
+            return;
+        }
+        int dmg = 35 + getLevel() * 3 + getAttackBonus();
+        if (target.isBlocking()) dmg = (int)(dmg * 0.3);
+        target.takeDamage(dmg, particles);
+        target.applyKnockback(isFacingLeft() ? -30 : 30);
+        setSpirit(getSpirit() - 25);
+        // Also heals self
+        heal(15, particles);
+        particles.spawnBigText("DERVISH WHIRL!", getX(), getY() - 220, Color.WHITE);
+        particles.spawnFloatingText("-" + dmg, target.getX(), target.getY() - 180, Color.RED);
+        particles.spawnAura(getX(), getY() - 80, Color.WHITE, 25);
+        particles.spawnHitParticles(target.getX(), target.getY() - 100, Color.WHEAT, 15);
+        particles.triggerShake(GameConfig.SHAKE_INTENSITY_LIGHT);
+        AudioManager.playSFX("special.wav");
+    }
+
+    @Override public void castSpell(Fighter t, ParticleSystem p, HUD h) { performSpecial(t, p, h); }
+    @Override public int getSpellDamage() { return 35; }
+    @Override public String getSpellName() { return "Dervish Whirl"; }
+    @Override public void raiseShield() { shielded = true; setBlocking(true); }
+    @Override public void lowerShield() { shielded = false; setBlocking(false); }
+    @Override public boolean isShielded() { return shielded; }
+    @Override public double getShieldDamageReduction() { return 0.8; }
+
+    @Override
+    public void drawSelf(GraphicsContext gc) {
+        drawBase(gc, Color.web("#8B7355"), Color.web("#6b5335"));
+        gc.save();
+        gc.translate(x, y + Math.sin(bobTimer) * 3);
+        if (facingLeft) gc.scale(-1, 1);
+        // Staff
+        gc.setFill(Color.SADDLEBROWN);
+        gc.fillRect(35, -150, 6, 130);
+        // Staff orb
+        gc.setFill(new Color(1, 1, 0.8, 0.7 + Math.sin(bobTimer * 3) * 0.2));
+        gc.fillOval(32, -160, 14, 14);
+        // Tall hat
+        gc.setFill(Color.web("#5a4a3a"));
+        gc.fillRect(-12, -200, 24, 30);
+        // Prayer beads
+        gc.setFill(Color.GOLDENROD);
+        for (int i = 0; i < 6; i++) {
+            gc.fillOval(28 + i * 2, -60 - i * 3, 4, 4);
+        }
+        gc.restore();
+    }
+
+    @Override public Color getPrimaryColor() { return Color.web("#8B7355"); }
+    @Override public Color getAuraColor() { return Color.WHITE; }
+}
+
+
+/* ==============================================================================
+   FILE: ShieldBearer.java
+   =============================================================================*/
+
+/**
+ * ShieldBearer.java
+ * Interface for characters that can raise a defensive shield.
+ * Demonstrates interface usage in OOP.
+ */
+public interface ShieldBearer {
+    void raiseShield();
+    void lowerShield();
+    boolean isShielded();
+    double getShieldDamageReduction();
+}
+
+
+/* ==============================================================================
+   FILE: ShopState.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.input.KeyCode;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+
+public class ShopState extends GameState {
+
+    private String[] items = {
+        "HEALING POTION (+50 HP) - 30 Gold",
+        "SPIRIT ELIXIR (+50 SP) - 30 Gold",
+        "SWORD SHARPENER (+5 ATK) - 100 Gold",
+        "ARMOR PLATING (+5 DEF) - 100 Gold",
+        "CONTINUE TO NEXT BATTLE"
+    };
+    
+    private int[] costs = {30, 30, 100, 100, 0};
+    private int selectedIndex = 0;
+
+    public ShopState(GameEngine engine) {
+        super(engine);
+    }
+
+    @Override
+    public void enter() {
+        AudioManager.playBGM("menu_bgm.wav");
+        engine.getParticles().clear();
+    }
+
+    @Override
+    public void exit() {
+    }
+
+    @Override
+    public void update(double dt) {
+    }
+
+    @Override
+    public void render(GraphicsContext gc) {
+        // Background
+        gc.setFill(Color.web("#1a0f00"));
+        gc.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+
+        // Header
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setFont(Font.font("Impact", FontWeight.BOLD, 56));
+        gc.setFill(GameConfig.COLOR_GOLD);
+        gc.fillText("THE BAZAAR", GameConfig.CANVAS_WIDTH / 2, 80);
+
+        // Current Gold
+        gc.setFont(Font.font("Verdana", FontWeight.BOLD, 24));
+        gc.setFill(Color.YELLOW);
+        gc.fillText("YOUR GOLD: " + engine.getGold() + " Asharfi", GameConfig.CANVAS_WIDTH / 2, 130);
+
+        // Current Stats
+        Fighter p1 = engine.getPlayer1();
+        gc.setFont(Font.font("Verdana", 18));
+        gc.setFill(Color.WHITE);
+        gc.fillText(String.format("HP: %d/%d | SP: %d/%d | ATK BONUS: +%d | DEF BONUS: +%d", 
+            p1.getHp(), p1.getMaxHp(), p1.getSpirit(), p1.getMaxSpirit(), p1.getAttackBonus(), p1.getDefenseBonus()), 
+            GameConfig.CANVAS_WIDTH / 2, 170);
+
+        // Items list
+        gc.setFont(Font.font("Verdana", FontWeight.BOLD, 24));
+        for (int i = 0; i < items.length; i++) {
+            double y = 280 + i * 60;
+            if (i == selectedIndex) {
+                gc.setFill(Color.CYAN);
+                gc.fillRect(GameConfig.CANVAS_WIDTH / 2 - 300, y - 30, 600, 40);
+                gc.setFill(Color.BLACK);
+                gc.fillText("> " + items[i] + " <", GameConfig.CANVAS_WIDTH / 2, y);
+            } else {
+                gc.setFill(costs[i] <= engine.getGold() ? Color.WHITE : Color.GRAY);
+                gc.fillText(items[i], GameConfig.CANVAS_WIDTH / 2, y);
+            }
+        }
+
+        // Instructions
+        gc.setFont(Font.font("Verdana", 16));
+        gc.setFill(Color.LIGHTGRAY);
+        gc.fillText("UP/DOWN to select. ENTER to purchase.", GameConfig.CANVAS_WIDTH / 2, GameConfig.CANVAS_HEIGHT - 30);
+    }
+
+    @Override
+    public void handleKeyPressed(KeyCode code) {
+        if (code == KeyCode.UP) {
+            selectedIndex--;
+            if (selectedIndex < 0) selectedIndex = items.length - 1;
+            AudioManager.playSFX("hit_light.wav");
+        } else if (code == KeyCode.DOWN) {
+            selectedIndex++;
+            if (selectedIndex >= items.length) selectedIndex = 0;
+            AudioManager.playSFX("hit_light.wav");
+        } else if (code == KeyCode.ENTER) {
+            if (selectedIndex == items.length - 1) {
+                // Continue
+                AudioManager.playSFX("special.wav");
+                engine.switchState("VSScreen");
+            } else {
+                // Try purchase
+                if (engine.getGold() >= costs[selectedIndex]) {
+                    engine.addGold(-costs[selectedIndex]);
+                    AudioManager.playSFX("heal.wav");
+                    Fighter p1 = engine.getPlayer1();
+                    
+                    switch (selectedIndex) {
+                        case 0: p1.heal(50, engine.getParticles()); break;
+                        case 1: p1.setSpirit(p1.getSpirit() + 50); break;
+                        case 2: p1.setAttackBonus(p1.getAttackBonus() + 5); break;
+                        case 3: p1.setDefenseBonus(p1.getDefenseBonus() + 5); break;
+                    }
+                } else {
+                    AudioManager.playSFX("block.wav"); // error sound
+                }
+            }
+        }
+    }
+}
+
+
+/* ==============================================================================
+   FILE: SoundGenerator.java
+   =============================================================================*/
+
+import javax.sound.sampled.*;
+import java.io.*;
+import java.util.Random;
+
+/**
+ * SoundGenerator.java
+ * Generates procedural WAV sound effects on first run.
+ * Creates battle drums, hit sounds, and atmospheric audio
+ * so the game has audio even without manually added files.
+ */
+public class SoundGenerator {
+
+    private static final int SAMPLE_RATE = 22050;
+    private static final Random random = new Random();
+
+    /**
+     * Generate all missing sound effects into assets/audio/.
+     * Only creates files that don't already exist.
+     */
+    public static void generateAll() {
+        File audioDir = new File(GameConfig.AUDIO_DIR);
+        if (!audioDir.exists()) audioDir.mkdirs();
+
+        generateIfMissing("hit_light.wav", () -> generateHitSound(0.15, 800, 0.6));
+        generateIfMissing("hit_heavy.wav", () -> generateHitSound(0.25, 400, 0.9));
+        generateIfMissing("block.wav", () -> generateBlockSound());
+        generateIfMissing("special.wav", () -> generateSpecialSound());
+        generateIfMissing("heal.wav", () -> generateHealSound());
+        generateIfMissing("ko.wav", () -> generateKOSound());
+        generateIfMissing("round_start.wav", () -> generateRoundStartSound());
+        generateIfMissing("victory.wav", () -> generateVictorySound());
+        generateIfMissing("defeat.wav", () -> generateDefeatSound());
+        generateIfMissing("menu_bgm.wav", () -> generateMenuBGM());
+        generateIfMissing("fight_bgm.wav", () -> generateFightBGM());
+
+        System.out.println("[SoundGenerator] Audio generation complete.");
+    }
+
+    private static void generateIfMissing(String filename, SoundProducer producer) {
+        File file = new File(GameConfig.AUDIO_DIR + filename);
+        if (!file.exists()) {
+            try {
+                byte[] data = producer.produce();
+                writeWav(file, data);
+                System.out.println("[SoundGenerator] Created: " + filename);
+            } catch (Exception e) {
+                System.err.println("[SoundGenerator] Failed to create: " + filename + " - " + e.getMessage());
+            }
+        }
+    }
+
+    @FunctionalInterface
+    interface SoundProducer {
+        byte[] produce();
+    }
+
+    // --- Sound Generators ---
+
+    private static byte[] generateHitSound(double duration, double freq, double volume) {
+        int samples = (int)(SAMPLE_RATE * duration);
+        byte[] data = new byte[samples];
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double envelope = Math.max(0, 1.0 - t / duration);
+            double noise = (random.nextDouble() - 0.5) * 0.5;
+            double tone = Math.sin(2 * Math.PI * freq * t * (1 - t * 2));
+            data[i] = (byte)(127 * volume * envelope * (tone * 0.6 + noise * 0.4));
+        }
+        return data;
+    }
+
+    private static byte[] generateBlockSound() {
+        int samples = (int)(SAMPLE_RATE * 0.15);
+        byte[] data = new byte[samples];
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double envelope = Math.max(0, 1.0 - t / 0.15);
+            double tone = Math.sin(2 * Math.PI * 1200 * t);
+            data[i] = (byte)(80 * envelope * tone);
+        }
+        return data;
+    }
+
+    private static byte[] generateSpecialSound() {
+        int samples = (int)(SAMPLE_RATE * 0.5);
+        byte[] data = new byte[samples];
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double envelope = t < 0.05 ? t / 0.05 : Math.max(0, 1.0 - (t - 0.05) / 0.45);
+            double sweep = 200 + 600 * t;
+            double tone = Math.sin(2 * Math.PI * sweep * t);
+            double harmonic = Math.sin(2 * Math.PI * sweep * 1.5 * t) * 0.3;
+            data[i] = (byte)(100 * envelope * (tone + harmonic));
+        }
+        return data;
+    }
+
+    private static byte[] generateHealSound() {
+        int samples = (int)(SAMPLE_RATE * 0.6);
+        byte[] data = new byte[samples];
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double envelope = Math.sin(Math.PI * t / 0.6);
+            double tone1 = Math.sin(2 * Math.PI * 523 * t); // C5
+            double tone2 = Math.sin(2 * Math.PI * 659 * t); // E5
+            double tone3 = Math.sin(2 * Math.PI * 784 * t); // G5
+            double mix = (tone1 + tone2 + tone3) / 3.0;
+            data[i] = (byte)(80 * envelope * mix);
+        }
+        return data;
+    }
+
+    private static byte[] generateKOSound() {
+        int samples = (int)(SAMPLE_RATE * 0.8);
+        byte[] data = new byte[samples];
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double envelope = Math.max(0, 1.0 - t / 0.8);
+            double bass = Math.sin(2 * Math.PI * 80 * t) * 0.7;
+            double impact = Math.sin(2 * Math.PI * 200 * t * (1 - t)) * 0.5;
+            double noise = (random.nextDouble() - 0.5) * 0.3 * Math.max(0, 1.0 - t / 0.2);
+            data[i] = (byte)(120 * envelope * (bass + impact + noise));
+        }
+        return data;
+    }
+
+    private static byte[] generateRoundStartSound() {
+        int samples = (int)(SAMPLE_RATE * 0.4);
+        byte[] data = new byte[samples];
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double envelope = t < 0.02 ? t / 0.02 : Math.max(0, 1.0 - (t - 0.02) / 0.38);
+            double tone = Math.sin(2 * Math.PI * 440 * t) + Math.sin(2 * Math.PI * 880 * t) * 0.5;
+            data[i] = (byte)(80 * envelope * tone / 1.5);
+        }
+        return data;
+    }
+
+    private static byte[] generateVictorySound() {
+        int samples = (int)(SAMPLE_RATE * 1.0);
+        byte[] data = new byte[samples];
+        double[] notes = {523, 659, 784, 1047}; // C E G C (major chord arpeggio)
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            int noteIdx = Math.min((int)(t * 4), 3);
+            double noteT = t - noteIdx * 0.25;
+            double envelope = Math.max(0, 1.0 - noteT / 0.3);
+            double tone = Math.sin(2 * Math.PI * notes[noteIdx] * t);
+            data[i] = (byte)(80 * envelope * tone);
+        }
+        return data;
+    }
+
+    private static byte[] generateDefeatSound() {
+        int samples = (int)(SAMPLE_RATE * 1.0);
+        byte[] data = new byte[samples];
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double freq = 400 - 300 * t; // Descending pitch
+            double envelope = Math.max(0, 1.0 - t);
+            double tone = Math.sin(2 * Math.PI * freq * t);
+            data[i] = (byte)(80 * envelope * tone);
+        }
+        return data;
+    }
+
+    // --- BGM Generators (looping drum patterns) ---
+
+    private static byte[] generateMenuBGM() {
+        // 8-second ambient drum loop
+        double duration = 8.0;
+        int samples = (int)(SAMPLE_RATE * duration);
+        byte[] data = new byte[samples];
+        double bpm = 70;
+        double beatLen = 60.0 / bpm;
+
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double beatPos = (t % beatLen) / beatLen;
+            double val = 0;
+
+            // Deep tabla-like bass on beat
+            if (beatPos < 0.1) {
+                double env = 1.0 - beatPos / 0.1;
+                val += Math.sin(2 * Math.PI * 60 * t) * env * 0.6;
+            }
+            // Lighter tap on off-beat
+            double halfBeat = ((t + beatLen/2) % beatLen) / beatLen;
+            if (halfBeat < 0.05) {
+                double env = 1.0 - halfBeat / 0.05;
+                val += Math.sin(2 * Math.PI * 200 * t) * env * 0.3;
+            }
+            // Ambient drone
+            val += Math.sin(2 * Math.PI * 110 * t) * 0.08;
+
+            data[i] = (byte)(Math.max(-127, Math.min(127, val * 100)));
+        }
+        return data;
+    }
+
+    private static byte[] generateFightBGM() {
+        // 6-second intense battle drum loop
+        double duration = 6.0;
+        int samples = (int)(SAMPLE_RATE * duration);
+        byte[] data = new byte[samples];
+        double bpm = 140;
+        double beatLen = 60.0 / bpm;
+
+        for (int i = 0; i < samples; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double beatPos = (t % beatLen) / beatLen;
+            double val = 0;
+
+            // Heavy kick drum on beat
+            if (beatPos < 0.08) {
+                double env = 1.0 - beatPos / 0.08;
+                val += Math.sin(2 * Math.PI * 55 * t * (1 + env * 2)) * env * 0.8;
+            }
+            // Snare-like hit on off-beat
+            double halfBeat = ((t + beatLen/2) % beatLen) / beatLen;
+            if (halfBeat < 0.05) {
+                double env = 1.0 - halfBeat / 0.05;
+                val += (random.nextDouble() - 0.5) * env * 0.5;
+                val += Math.sin(2 * Math.PI * 300 * t) * env * 0.3;
+            }
+            // Hi-hat pattern (every 1/4 beat)
+            double quarterBeat = ((t) % (beatLen / 4)) / (beatLen / 4);
+            if (quarterBeat < 0.02) {
+                double env = 1.0 - quarterBeat / 0.02;
+                val += (random.nextDouble() - 0.5) * env * 0.15;
+            }
+
+            data[i] = (byte)(Math.max(-127, Math.min(127, val * 100)));
+        }
+        return data;
+    }
+
+    // --- WAV Writer ---
+
+    private static void writeWav(File file, byte[] data) throws IOException {
+        AudioFormat format = new AudioFormat(SAMPLE_RATE, 8, 1, true, false);
+        ByteArrayInputStream bais = new ByteArrayInputStream(data);
+        AudioInputStream ais = new AudioInputStream(bais, format, data.length);
+        AudioSystem.write(ais, AudioFileFormat.Type.WAVE, file);
+    }
+}
+
+
+/* ==============================================================================
+   FILE: Spellcaster.java
+   =============================================================================*/
+
+/**
+ * Spellcaster.java
+ * Interface for characters that can cast magical spells.
+ * Demonstrates interface usage in OOP - behavioral contract.
+ */
+public interface Spellcaster {
+    void castSpell(Fighter target, ParticleSystem particles, HUD hud);
+    int getSpellDamage();
+    String getSpellName();
+}
+
+
+/* ==============================================================================
+   FILE: SpriteRenderer.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.Image;
+import javafx.scene.paint.Color;
+import javafx.scene.effect.*;
+import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * SpriteRenderer.java
+ * Handles loading, caching, and rendering of character sprites and backgrounds.
+ * Supports flipping, tinting (damage flash), scaling, and opacity.
+ * Uses a HashMap cache to avoid reloading images.
+ */
+public class SpriteRenderer {
+
+    private static Map<String, Image> imageCache = new HashMap<>();
+
+    /**
+     * Loads an image from the assets directory, with caching.
+     */
+    public static Image loadImage(String relativePath) {
+        if (imageCache.containsKey(relativePath)) {
+            return imageCache.get(relativePath);
+        }
+
+        try {
+            File file = new File(relativePath);
+            if (file.exists()) {
+                Image img = new Image(file.toURI().toString());
+                imageCache.put(relativePath, img);
+                return img;
+            }
+        } catch (Exception e) {
+            System.err.println("[SpriteRenderer] Failed to load: " + relativePath);
+        }
+
+        return null;
+    }
+
+    /**
+     * Loads a character portrait image.
+     */
+    public static Image loadCharacterPortrait(String characterId) {
+        return loadImage(GameConfig.CHARACTERS_DIR + characterId + ".png");
+    }
+
+    /**
+     * Loads a stage background image.
+     */
+    public static Image loadStageBackground(String stageId) {
+        return loadImage(GameConfig.STAGES_DIR + stageId + ".png");
+    }
+
+    /**
+     * Draws a sprite at the given position with optional flipping.
+     * @param gc Graphics context
+     * @param img Image to draw
+     * @param x Center X position
+     * @param y Bottom Y position
+     * @param width Draw width
+     * @param height Draw height
+     * @param facingLeft Whether to flip horizontally
+     * @param tintColor Optional tint color (null for no tint)
+     * @param opacity Opacity (0.0 to 1.0)
+     */
+    public static void drawSprite(GraphicsContext gc, Image img, double x, double y,
+                                   double width, double height, boolean facingLeft,
+                                   Color tintColor, double opacity) {
+        if (img == null) return;
+
+        gc.save();
+        gc.setGlobalAlpha(opacity);
+
+        if (facingLeft) {
+            gc.translate(x + width / 2, y - height);
+            gc.scale(-1, 1);
+            gc.drawImage(img, -width / 2, 0, width, height);
+        } else {
+            gc.drawImage(img, x - width / 2, y - height, width, height);
+        }
+
+        // Apply tint overlay if specified (damage flash)
+        if (tintColor != null) {
+            gc.setGlobalBlendMode(javafx.scene.effect.BlendMode.SRC_ATOP);
+            gc.setFill(tintColor);
+            if (facingLeft) {
+                gc.fillRect(-width / 2, 0, width, height);
+            } else {
+                gc.fillRect(x - width / 2, y - height, width, height);
+            }
+        }
+
+        gc.restore();
+    }
+
+    /**
+     * Draws a sprite as a character in the fight scene with bob animation.
+     */
+    public static void drawFighter(GraphicsContext gc, Image img, double x, double y,
+                                    double width, double height, boolean facingLeft,
+                                    double hitFlashTimer, double bobOffset) {
+        Color tint = null;
+        double opacity = 1.0;
+
+        if (hitFlashTimer > 0) {
+            tint = new Color(1, 1, 1, 0.6);
+        }
+
+        drawSprite(gc, img, x, y + bobOffset, width, height, facingLeft, tint, opacity);
+    }
+
+    /**
+     * Draws a background image stretched to fill the canvas.
+     */
+    public static void drawBackground(GraphicsContext gc, Image img) {
+        if (img != null) {
+            gc.drawImage(img, 0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+        } else {
+            // Fallback gradient
+            gc.setFill(new javafx.scene.paint.LinearGradient(
+                0, 0, 0, 1, true, javafx.scene.paint.CycleMethod.NO_CYCLE,
+                new javafx.scene.paint.Stop(0, Color.web("#1a1a2e")),
+                new javafx.scene.paint.Stop(1, Color.web("#0f0f23"))
+            ));
+            gc.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+        }
+    }
+
+    /**
+     * Draws a character portrait for the HUD/select screen.
+     */
+    public static void drawPortrait(GraphicsContext gc, Image img, double x, double y,
+                                     double width, double height, boolean selected) {
+        if (img != null) {
+            gc.drawImage(img, x, y, width, height);
+        } else {
+            gc.setFill(Color.GRAY);
+            gc.fillRect(x, y, width, height);
+        }
+
+        if (selected) {
+            gc.setStroke(GameConfig.COLOR_GOLD);
+            gc.setLineWidth(3);
+            gc.strokeRect(x - 2, y - 2, width + 4, height + 4);
+        }
+    }
+
+    /**
+     * Pre-loads all game images into cache.
+     */
+    public static void preloadAll() {
+        System.out.println("[SpriteRenderer] Pre-loading assets...");
+
+        for (String id : GameConfig.CHARACTER_IDS) {
+            loadCharacterPortrait(id);
+        }
+        for (String id : GameConfig.STAGE_IDS) {
+            loadStageBackground(id);
+        }
+        loadImage(GameConfig.UI_DIR + "title_background.png");
+
+        System.out.println("[SpriteRenderer] Assets loaded: " + imageCache.size() + " images.");
+    }
+
+    /**
+     * Clears the image cache to free memory.
+     */
+    public static void clearCache() {
+        imageCache.clear();
+    }
+}
+
+
+/* ==============================================================================
+   FILE: StoryState.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.Image;
+import javafx.scene.input.KeyCode;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+
+/**
+ * StoryState.java
+ * Displays narrative cutscenes between story mode battles.
+ * Features multi-page dialogue with character portraits and speech bubbles.
+ * Press ENTER to advance dialogue, then begins the fight.
+ */
+public class StoryState extends GameState {
+
+    // Each chapter has: title, stage background ID, and dialogue lines.
+    // Dialogue format: "SPEAKER_ID|Text" where SPEAKER_ID maps to a portrait.
+    // Use "NARRATOR|" for narration (no portrait), or character IDs for speech bubbles.
+    private static final String[][][] STORY_CHAPTERS = {
+        // === Chapter 0: Prologue (no fight - auto-advance to chapter 1) ===
+        {
+            {"Prologue: The Shattered Amulet", "thar_desert"},
+            {
+                "NARRATOR|In the ancient lands of Hindustan, a fragile peace held for centuries...",
+                "NARRATOR|The Amulet of Jamshed, a relic of immense power, kept the veil\nbetween the mortal world and the realm of Djinn sealed tight.",
+                "NARRATOR|But on the night of a blood-red moon, the seal shattered.\nDark forces poured through the cracks in reality.",
+                "al_murtaza|I felt the tremor in my prayers tonight.\nThe balance has been broken... I must act.",
+                "al_murtaza|The Amulet's shards have scattered across the land.\nIf Iblis collects them first, all will be lost.",
+                "NARRATOR|And so the Sufi warrior Al-Murtaza began his quest,\nwielding the legendary Zulfiqar, to restore the Amulet\nand banish the darkness once more.",
+                "NARRATOR|His first destination: the scorching Thar Desert,\nwhere the water djinn Marid guards a shard..."
+            }
+        },
+        // === Chapter 1: Thar Desert - vs Marid ===
+        {
+            {"Chapter I: The Desert Guardian", "thar_desert"},
+            {
+                "NARRATOR|The endless dunes of the Thar stretch before Al-Murtaza.\nHeat shimmers distort the horizon as he approaches an oasis.",
+                "al_murtaza|The amulet shard pulses with energy...\nI can feel its power beneath these sands.",
+                "marid|HALT, mortal! You dare trespass in my domain?",
+                "al_murtaza|I mean no disrespect, O Marid.\nI seek only the Amulet shard to restore the seal.",
+                "marid|The shard is MINE now. Its power feeds my waters.\nIf you want it... you must TAKE it from me!",
+                "al_murtaza|Then forgive me, spirit.\nThis blade speaks when words fail.",
+                "NARRATOR|The desert erupts in a clash of steel and water.\nThe battle for the first shard begins!"
+            }
+        },
+        // === Chapter 2: Haunted Haveli - vs Churail ===
+        {
+            {"Chapter II: The Haunted Haveli", "haunted_haveli"},
+            {
+                "NARRATOR|With the first shard recovered, Al-Murtaza travels north\nto the abandoned havelis of Punjab.",
+                "NARRATOR|The villages whisper of a ghostly presence\nthat devours the souls of wanderers at night.",
+                "al_murtaza|I can feel the darkness here.\nThe walls themselves weep with sorrow.",
+                "churail|Hehehehe... Another soul wanders into my web.\nHow... delicious.",
+                "al_murtaza|Churail! Release the shard and the souls you hold captive!",
+                "churail|Release them? Oh, but they keep me company\nin this lonely haveli... just as YOU will!",
+                "al_murtaza|Your reign of terror ends tonight, witch.\nBy the light of the Divine, I will set them free!",
+                "churail|Then come, warrior. Let us see if your faith\nis stronger than my hunger!",
+                "NARRATOR|The haveli trembles as ancient power collides.\nDarkness fights against light in the cursed halls."
+            }
+        },
+        // === Chapter 3: Iblis Throne - vs Iblis ===
+        {
+            {"Chapter III: The Throne of Shadows", "iblis_throne"},
+            {
+                "NARRATOR|Two shards recovered. The Amulet is nearly whole.\nBut the final piece lies in the deepest abyss.",
+                "NARRATOR|Through the underground lairs of the Jinn,\npast rivers of fire and shadow, Al-Murtaza descends.",
+                "al_murtaza|The air burns with brimstone.\nI can feel his presence... Iblis awaits.",
+                "iblis|So... the little Sufi comes at last.\nI have been watching your pathetic journey.",
+                "al_murtaza|Iblis! Your corruption ends here.\nReturn the final shard!",
+                "iblis|Return it? I AM the darkness, fool.\nThe shard is part of me now. To take it...\nyou must destroy me. And THAT... is impossible.",
+                "al_murtaza|Nothing is impossible with faith.\nLa hawla wa la quwwata illa billah!",
+                "iblis|Then DIE with your prayers on your lips!\nI will enjoy crushing your hope!",
+                "NARRATOR|This is the final battle.\nThe fate of all creation hangs in the balance.\n\nPREPARE FOR THE ULTIMATE FIGHT!"
+            }
+        },
+        // === Chapter 4: Epilogue (no fight) ===
+        {
+            {"Epilogue: Dawn of a New Age", "mughal_garden"},
+            {
+                "NARRATOR|With a final strike of the Zulfiqar, Iblis is vanquished.\nHis throne crumbles into the abyss.",
+                "NARRATOR|The three shards of the Amulet of Jamshed reunite,\nglowing with ancient light that fills the cavern.",
+                "al_murtaza|It is done. The seal is restored.\nThe darkness will not return... not in this age.",
+                "NARRATOR|As dawn breaks over the land of Hindustan,\nthe wounds of the world begin to heal.",
+                "NARRATOR|The spirits return to their realms.\nThe ghosts find peace. The fire dims.",
+                "al_murtaza|My journey has ended, but the path of the righteous\nnever truly ends. There will always be those\nwho walk in the light.",
+                "NARRATOR|And so the legend of Al-Murtaza,\nthe Sufi Warrior of Hindustan, was written\ninto the eternal pages of history.",
+                "NARRATOR|~~ THE END ~~\n\nThank you for playing JOSH-E-JUNG!\n\nPress ENTER to return to the menu."
+            }
+        }
+    };
+
+    // Maps chapter index to which fight opponent index (-1 = no fight, cutscene only)
+    private static final int[] CHAPTER_OPPONENT = { -1, 3, 4, 7, -1 };
+    // Maps chapter index to stage index for the fight
+    private static final int[] CHAPTER_STAGE = { 0, 0, 2, 4, 1 };
+
+    private Image stageBackground;
+    private Image speakerPortrait;
+    private String currentSpeakerId = "";
+    private int currentChapter = 0;
+    private int currentLine = 0;
+    private int textCharsToDraw = 0;
+    private double timer = 0;
+    private double bubbleAnimTimer = 0;
+
+    public StoryState(GameEngine engine) {
+        super(engine);
+    }
+
+    @Override
+    public void enter() {
+        currentChapter = engine.getCurrentStoryChapter();
+        if (currentChapter >= STORY_CHAPTERS.length) {
+            engine.switchState("Menu");
+            return;
+        }
+
+        currentLine = 0;
+        textCharsToDraw = 0;
+        timer = 0;
+        bubbleAnimTimer = 0;
+
+        // Load stage background
+        String stageId = STORY_CHAPTERS[currentChapter][0][1];
+        stageBackground = SpriteRenderer.loadStageBackground(stageId);
+        speakerPortrait = null;
+        currentSpeakerId = "";
+
+        AudioManager.playBGM("menu_bgm.wav");
+    }
+
+    @Override
+    public void exit() {
+    }
+
+    @Override
+    public void update(double dt) {
+        timer += dt;
+        bubbleAnimTimer += dt;
+
+        String[] dialogueLines = STORY_CHAPTERS[currentChapter][1];
+        if (currentLine < dialogueLines.length) {
+            String line = dialogueLines[currentLine];
+            String text = line.substring(line.indexOf('|') + 1);
+            int maxChars = text.length();
+            textCharsToDraw = Math.min(maxChars, (int)(timer * 40)); // 40 chars/sec
+        }
+    }
+
+    @Override
+    public void render(GraphicsContext gc) {
+        if (currentChapter >= STORY_CHAPTERS.length) return;
+        String[] dialogueLines = STORY_CHAPTERS[currentChapter][1];
+        if (currentLine >= dialogueLines.length) return;
+
+        // Background
+        SpriteRenderer.drawBackground(gc, stageBackground);
+
+        // Dark cinematic overlay
+        gc.setFill(new Color(0, 0, 0, 0.65));
+        gc.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+
+        // Chapter title at top
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setFont(Font.font("Impact", FontWeight.BOLD, 36));
+        gc.setFill(GameConfig.COLOR_GOLD);
+        gc.fillText(STORY_CHAPTERS[currentChapter][0][0], GameConfig.CANVAS_WIDTH / 2, 50);
+
+        // Parse current line
+        String line = dialogueLines[currentLine];
+        String speakerId = line.substring(0, line.indexOf('|'));
+        String fullText = line.substring(line.indexOf('|') + 1);
+        String visibleText = fullText.substring(0, Math.min(textCharsToDraw, fullText.length()));
+
+        // Load speaker portrait if changed
+        if (!speakerId.equals(currentSpeakerId)) {
+            currentSpeakerId = speakerId;
+            if (!speakerId.equals("NARRATOR")) {
+                speakerPortrait = SpriteRenderer.loadCharacterPortrait(speakerId);
+            } else {
+                speakerPortrait = null;
+            }
+        }
+
+        if (speakerId.equals("NARRATOR")) {
+            // --- Narration: centered text with cinematic bar ---
+            drawNarrationBox(gc, visibleText);
+        } else {
+            // --- Character dialogue: speech bubble with portrait ---
+            drawSpeechBubble(gc, speakerId, visibleText);
+        }
+
+        // Page indicator
+        gc.setTextAlign(TextAlignment.RIGHT);
+        gc.setFont(Font.font("Verdana", FontWeight.NORMAL, 14));
+        gc.setFill(new Color(1, 1, 1, 0.5));
+        gc.fillText((currentLine + 1) + " / " + dialogueLines.length,
+            GameConfig.CANVAS_WIDTH - 20, GameConfig.CANVAS_HEIGHT - 15);
+
+        // Continue prompt (blinking)
+        if (textCharsToDraw >= fullText.length()) {
+            if ((int)(timer * 2) % 2 == 0) {
+                gc.setTextAlign(TextAlignment.CENTER);
+                gc.setFont(Font.font("Verdana", FontWeight.BOLD, 16));
+                gc.setFill(GameConfig.COLOR_GOLD);
+                gc.fillText("▸ Press ENTER to continue ◂",
+                    GameConfig.CANVAS_WIDTH / 2, GameConfig.CANVAS_HEIGHT - 15);
+            }
+        }
+    }
+
+    /** Draws a centered narration text box with a semi-transparent background. */
+    private void drawNarrationBox(GraphicsContext gc, String text) {
+        double boxW = GameConfig.CANVAS_WIDTH - 120;
+        double boxH = 160;
+        double boxX = 60;
+        double boxY = GameConfig.CANVAS_HEIGHT / 2 - boxH / 2 + 30;
+
+        // Box background
+        gc.setFill(new Color(0, 0, 0, 0.75));
+        gc.fillRoundRect(boxX, boxY, boxW, boxH, 15, 15);
+        gc.setStroke(new Color(0.85, 0.65, 0.13, 0.6));
+        gc.setLineWidth(2);
+        gc.strokeRoundRect(boxX, boxY, boxW, boxH, 15, 15);
+
+        // Narrator label
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.setFont(Font.font("Verdana", FontWeight.BOLD, 14));
+        gc.setFill(GameConfig.COLOR_GOLD);
+        gc.fillText("NARRATOR", boxX + 20, boxY + 25);
+
+        // Text
+        gc.setFont(Font.font("Verdana", FontWeight.NORMAL, 18));
+        gc.setFill(Color.WHITE);
+        drawWrappedText(gc, text, boxX + 20, boxY + 50, boxW - 40, 24);
+    }
+
+    /** Draws a speech bubble with character portrait. */
+    private void drawSpeechBubble(GraphicsContext gc, String speakerId, String text) {
+        // Determine if speaker is on left or right
+        boolean isHero = speakerId.equals("al_murtaza") || speakerId.equals("noor_jahan") || speakerId.equals("peer_sahib");
+        double portraitSize = 140;
+        double bubbleW = GameConfig.CANVAS_WIDTH - 240;
+        double bubbleH = 150;
+
+        double portraitX, portraitY, bubbleX, bubbleY;
+
+        if (isHero) {
+            // Portrait on left
+            portraitX = 30;
+            portraitY = GameConfig.CANVAS_HEIGHT - portraitSize - 60;
+            bubbleX = portraitX + portraitSize + 15;
+            bubbleY = portraitY + 5;
+        } else {
+            // Portrait on right
+            portraitX = GameConfig.CANVAS_WIDTH - portraitSize - 30;
+            portraitY = GameConfig.CANVAS_HEIGHT - portraitSize - 60;
+            bubbleX = 30;
+            bubbleY = portraitY + 5;
+            bubbleW = portraitX - 45;
+        }
+
+        // Portrait frame
+        gc.setFill(new Color(0, 0, 0, 0.8));
+        gc.fillRoundRect(portraitX - 4, portraitY - 4, portraitSize + 8, portraitSize + 8, 10, 10);
+        gc.setStroke(isHero ? Color.CYAN : Color.RED);
+        gc.setLineWidth(3);
+        gc.strokeRoundRect(portraitX - 4, portraitY - 4, portraitSize + 8, portraitSize + 8, 10, 10);
+
+        // Portrait image
+        if (speakerPortrait != null) {
+            gc.drawImage(speakerPortrait, portraitX, portraitY, portraitSize, portraitSize);
+        }
+
+        // Speech bubble background
+        double bubbleAnim = Math.min(1.0, bubbleAnimTimer * 4); // Quick pop-in
+        gc.save();
+        gc.setGlobalAlpha(bubbleAnim);
+
+        gc.setFill(new Color(1, 1, 1, 0.92));
+        gc.fillRoundRect(bubbleX, bubbleY, bubbleW, bubbleH, 18, 18);
+
+        // Bubble tail (triangle pointing to portrait)
+        if (isHero) {
+            // Tail pointing left
+            gc.setFill(new Color(1, 1, 1, 0.92));
+            gc.fillPolygon(
+                new double[]{bubbleX, bubbleX - 15, bubbleX},
+                new double[]{bubbleY + 30, bubbleY + 45, bubbleY + 55}, 3
+            );
+        } else {
+            // Tail pointing right
+            gc.setFill(new Color(1, 1, 1, 0.92));
+            gc.fillPolygon(
+                new double[]{bubbleX + bubbleW, bubbleX + bubbleW + 15, bubbleX + bubbleW},
+                new double[]{bubbleY + 30, bubbleY + 45, bubbleY + 55}, 3
+            );
+        }
+
+        // Speaker name in bubble
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.setFont(Font.font("Verdana", FontWeight.BOLD, 15));
+        gc.setFill(isHero ? Color.web("#006699") : Color.web("#990000"));
+        String displayName = getDisplayName(speakerId);
+        gc.fillText(displayName, bubbleX + 15, bubbleY + 24);
+
+        // Underline
+        gc.setStroke(isHero ? Color.web("#006699") : Color.web("#990000"));
+        gc.setLineWidth(1.5);
+        gc.strokeLine(bubbleX + 15, bubbleY + 28, bubbleX + bubbleW - 15, bubbleY + 28);
+
+        // Dialogue text (dark on white)
+        gc.setFont(Font.font("Verdana", FontWeight.NORMAL, 16));
+        gc.setFill(Color.web("#1a1a1a"));
+        drawWrappedText(gc, text, bubbleX + 15, bubbleY + 48, bubbleW - 30, 22);
+
+        gc.restore();
+    }
+
+    /** Helper: Get display name from character ID */
+    private String getDisplayName(String id) {
+        for (int i = 0; i < GameConfig.CHARACTER_IDS.length; i++) {
+            if (GameConfig.CHARACTER_IDS[i].equals(id)) {
+                return GameConfig.CHARACTER_NAMES[i];
+            }
+        }
+        return id.toUpperCase().replace('_', ' ');
+    }
+
+    /** Helper: Draw text with manual line wrapping on \n */
+    private void drawWrappedText(GraphicsContext gc, String text, double x, double y, double maxW, double lineH) {
+        String[] lines = text.split("\n");
+        double currentY = y;
+        for (String line : lines) {
+            gc.fillText(line, x, currentY);
+            currentY += lineH;
+        }
+    }
+
+    @Override
+    public void handleKeyPressed(KeyCode code) {
+        if (currentChapter >= STORY_CHAPTERS.length) return;
+        String[] dialogueLines = STORY_CHAPTERS[currentChapter][1];
+
+        if (code == KeyCode.ENTER || code == KeyCode.SPACE) {
+            String line = dialogueLines[currentLine];
+            String fullText = line.substring(line.indexOf('|') + 1);
+
+            if (textCharsToDraw < fullText.length()) {
+                // Skip text crawl — reveal all text
+                textCharsToDraw = fullText.length();
+            } else {
+                // Advance to next line
+                currentLine++;
+                timer = 0;
+                textCharsToDraw = 0;
+                bubbleAnimTimer = 0;
+                currentSpeakerId = ""; // Force portrait reload
+                AudioManager.playSFX("hit_light.wav");
+
+                if (currentLine >= dialogueLines.length) {
+                    // All dialogue done — proceed
+                    int opponent = CHAPTER_OPPONENT[currentChapter];
+                    if (opponent == -1) {
+                        // No fight for this chapter (prologue/epilogue)
+                        if (currentChapter >= STORY_CHAPTERS.length - 1) {
+                            // Epilogue done — back to menu
+                            engine.switchState("Menu");
+                        } else {
+                            // Move to next chapter
+                            engine.setCurrentStoryChapter(currentChapter + 1);
+                            engine.switchState("Story");
+                        }
+                    } else {
+                        // Set fight opponent and stage, proceed to VS screen
+                        engine.setP2CharIndex(opponent);
+                        engine.setStageIndex(CHAPTER_STAGE[currentChapter]);
+                        AudioManager.playSFX("special.wav");
+                        engine.switchState("VSScreen");
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/* ==============================================================================
+   FILE: SufiWarrior.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+
+/**
+ * SufiWarrior.java - AL-MURTAZA
+ * The main hero - a Sufi warrior wielding the legendary Zulfiqar sword.
+ * Implements Spellcaster and ShieldBearer interfaces.
+ * Balanced fighter with moderate stats across the board.
+ */
+public class SufiWarrior extends Fighter implements Spellcaster, ShieldBearer {
+
+    private boolean shielded = false;
+
+    public SufiWarrior() {
+        super("AL-MURTAZA", "al_murtaza", "The Sufi Warrior", 0, 100, 100);
+    }
+
+    @Override
+    protected void initMoves() {
+        moves.add(new Move("Jab", MoveType.LIGHT_PUNCH, 10, 0, Color.YELLOW));
+        moves.add(new Move("Zulfiqar Slash", MoveType.HEAVY_PUNCH, 20, 0, Color.GOLD));
+        moves.add(new Move("Swift Kick", MoveType.LIGHT_KICK, 12, 0, Color.ORANGE));
+        moves.add(new Move("Crescent Kick", MoveType.HEAVY_KICK, 22, 0, Color.ORANGERED));
+        moves.add(new Move("Zulfiqar Fury", MoveType.SPECIAL, 40, 30, Color.GOLD));
+        moves.add(new Move("Divine Wrath", MoveType.SUPER, 60, 60, Color.WHITE));
+        moves.add(new Move("Shifa", MoveType.HEAL, 0, 20, Color.LIME));
+    }
+
+    @Override
+    public void performSpecial(Fighter target, ParticleSystem particles, HUD hud) {
+        if (getSpirit() < 30) {
+            particles.spawnFloatingText("LOW SPIRIT!", getX(), getY() - 200, Color.CYAN);
+            return;
+        }
+        int dmg = 40 + getLevel() * 3 + getAttackBonus();
+        if (target.isBlocking()) dmg = (int)(dmg * 0.3);
+        target.takeDamage(dmg, particles);
+        target.applyKnockback(isFacingLeft() ? -45 : 45);
+        setSpirit(getSpirit() - 30);
+        particles.spawnBigText("ZULFIQAR!", getX(), getY() - 220, Color.GOLD);
+        particles.spawnFloatingText("-" + dmg, target.getX(), target.getY() - 180, Color.RED);
+        particles.spawnSparks(target.getX(), target.getY() - 100, Color.GOLD, 25);
+        particles.spawnFireBurst(target.getX(), target.getY() - 80, 15);
+        particles.triggerShake(GameConfig.SHAKE_INTENSITY_HEAVY);
+        particles.triggerHitFlash(Color.GOLD);
+        AudioManager.playSFX("special.wav");
+    }
+
+    @Override
+    public void castSpell(Fighter target, ParticleSystem particles, HUD hud) {
+        performSpecial(target, particles, hud);
+    }
+    @Override public int getSpellDamage() { return 40; }
+    @Override public String getSpellName() { return "Zulfiqar Fury"; }
+
+    @Override public void raiseShield() { shielded = true; setBlocking(true); }
+    @Override public void lowerShield() { shielded = false; setBlocking(false); }
+    @Override public boolean isShielded() { return shielded; }
+    @Override public double getShieldDamageReduction() { return 0.75; }
+
+    @Override
+    public void drawSelf(GraphicsContext gc) {
+        drawBase(gc, Color.DARKBLUE, Color.web("#1a3a6a"));
+
+        gc.save();
+        gc.translate(x, y + Math.sin(bobTimer) * 3);
+        if (facingLeft) gc.scale(-1, 1);
+
+        // Turban with wrapped layers
+        gc.setFill(Color.WHITE);
+        gc.fillOval(-18, -178, 36, 18);
+        gc.fillRect(-15, -175, 30, 8);
+        gc.setFill(Color.web("#e0e0e0"));
+        gc.fillOval(-20, -182, 40, 12);
+        // Turban tail
+        gc.setFill(Color.WHITE);
+        double tailWave = Math.sin(bobTimer * 2) * 5;
+        gc.fillRect(-25, -170, 8, 25 + tailWave);
+
+        // Flowing garment trim
+        gc.setFill(Color.web("#2a5a9a"));
+        gc.fillRect(-28, -80, 56, 8);
+        gc.setFill(Color.GOLD);
+        gc.fillRect(-28, -82, 56, 3);
+
+        // Sword - animate forward when attacking
+        double swordAngle = isAttacking ? -30 : 15;
+        double swordX = isAttacking ? 45 : 30;
+        double swordY = isAttacking ? -130 : -100;
+        gc.save();
+        gc.translate(swordX, swordY);
+        gc.rotate(swordAngle);
+        // Blade
+        gc.setFill(Color.SILVER);
+        gc.fillRect(-4, 0, 8, 75);
+        // Blade edge highlight
+        gc.setFill(new Color(1, 1, 1, 0.4));
+        gc.fillRect(-2, 0, 4, 75);
+        // Guard (cross-piece)
+        gc.setFill(Color.GOLD);
+        gc.fillRect(-12, -5, 24, 8);
+        // Handle
+        gc.setFill(Color.web("#8B4513"));
+        gc.fillRect(-3, 75, 6, 18);
+        // Pommel
+        gc.setFill(Color.GOLD);
+        gc.fillOval(-5, 90, 10, 10);
+        gc.restore();
+
+        // Sword glow when attacking
+        if (isAttacking) {
+            gc.setFill(new Color(1, 0.85, 0.2, 0.25));
+            gc.fillOval(swordX - 25, swordY - 10, 50, 90);
+        }
+
+        // Aura glow behind character
+        gc.setFill(new Color(1, 0.85, 0.2, 0.06 + Math.sin(bobTimer * 2) * 0.03));
+        gc.fillOval(-60, -200, 120, 220);
+
+        gc.restore();
+    }
+
+    @Override public Color getPrimaryColor() { return Color.DARKBLUE; }
+    @Override public Color getAuraColor() { return Color.GOLD; }
+}
+
+
+/* ==============================================================================
+   FILE: VictoryState.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.Image;
+import javafx.scene.input.KeyCode;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+
+public class VictoryState extends GameState {
+
+    private Fighter winner;
+    private Fighter loser;
+    private double timer = 0;
+    private Image winnerPortrait;
+    private int rewardGold = 0;
+
+    public VictoryState(GameEngine engine) {
+        super(engine);
+    }
+
+    @Override
+    public void enter() {
+        if (engine.getPlayer1().getRoundsWon() > engine.getPlayer2().getRoundsWon()) {
+            winner = engine.getPlayer1();
+            loser = engine.getPlayer2();
+        } else {
+            winner = engine.getPlayer2();
+            loser = engine.getPlayer1();
+        }
+
+        winnerPortrait = SpriteRenderer.loadCharacterPortrait(winner.getCharacterId());
+        timer = 0;
+        
+        // Calculate reward based on game mode
+        if (!engine.isPvP() && winner == engine.getPlayer1()) {
+            rewardGold = 50 + (engine.getPlayer2().getLevel() * 10);
+            engine.addGold(rewardGold);
+        } else {
+            rewardGold = 0;
+        }
+
+        AudioManager.playBGM("victory.wav");
+        
+        // Fireworks!
+        for (int i = 0; i < 20; i++) {
+            engine.getParticles().spawnSparks(
+                Math.random() * GameConfig.CANVAS_WIDTH, 
+                Math.random() * GameConfig.CANVAS_HEIGHT, 
+                winner.getAuraColor(), 10
+            );
+        }
+    }
+
+    @Override
+    public void exit() {
+    }
+
+    @Override
+    public void update(double dt) {
+        timer += dt;
+        
+        if (Math.random() < 0.05) {
+            engine.getParticles().spawnSparks(
+                Math.random() * GameConfig.CANVAS_WIDTH, 
+                Math.random() * GameConfig.CANVAS_HEIGHT, 
+                GameConfig.COLOR_GOLD, 5
+            );
+        }
+    }
+
+    @Override
+    public void render(GraphicsContext gc) {
+        // Background
+        gc.setFill(GameConfig.COLOR_DARK_BG);
+        gc.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+
+        // Portrait
+        if (winnerPortrait != null) {
+            gc.save();
+            gc.setGlobalAlpha(Math.min(1.0, timer));
+            gc.drawImage(winnerPortrait, GameConfig.CANVAS_WIDTH / 2 - 200, 150, 400, 400);
+            gc.restore();
+        }
+
+        // Title text
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setFont(Font.font("Impact", FontWeight.BOLD, 72));
+        
+        // Slide in from top
+        double titleY = Math.min(100, timer * 200 - 100);
+        
+        gc.setFill(Color.BLACK);
+        gc.fillText(winner.getName() + " WINS!", GameConfig.CANVAS_WIDTH / 2 + 5, titleY + 5);
+        gc.setFill(GameConfig.COLOR_GOLD);
+        gc.fillText(winner.getName() + " WINS!", GameConfig.CANVAS_WIDTH / 2, titleY);
+        gc.setStroke(Color.WHITE);
+        gc.setLineWidth(2);
+        gc.strokeText(winner.getName() + " WINS!", GameConfig.CANVAS_WIDTH / 2, titleY);
+
+        if (timer > 2.0) {
+            gc.setFont(Font.font("Verdana", FontWeight.BOLD, 24));
+            gc.setFill(Color.WHITE);
+            gc.fillText("FLAWLESS VICTORY", GameConfig.CANVAS_WIDTH / 2, 580);
+            
+            if (rewardGold > 0) {
+                gc.setFill(Color.YELLOW);
+                gc.fillText("REWARD: " + rewardGold + " ASHARFI (GOLD)", GameConfig.CANVAS_WIDTH / 2, 620);
+            }
+            
+            gc.setFont(Font.font("Verdana", 18));
+            gc.setFill(Color.LIGHTGRAY);
+            gc.fillText("Press SPACE to continue", GameConfig.CANVAS_WIDTH / 2, GameConfig.CANVAS_HEIGHT - 40);
+        }
+    }
+
+    @Override
+    public void handleKeyPressed(KeyCode code) {
+        if (timer > 2.0 && code == KeyCode.SPACE) {
+            AudioManager.playSFX("hit_light.wav");
+            
+            if (engine.getGameMode() == GameConfig.MODE_ARCADE && winner == engine.getPlayer1()) {
+                engine.setArcadeLevel(engine.getArcadeLevel() + 1);
+                engine.switchState("Shop"); // Go to shop between arcade matches
+            } else if (engine.getGameMode() == GameConfig.MODE_STORY && winner == engine.getPlayer1()) {
+                engine.setCurrentStoryChapter(engine.getCurrentStoryChapter() + 1);
+                engine.switchState("Story");
+            } else {
+                // PvP or player lost -> go back to menu
+                engine.switchState("Menu");
+            }
+        }
+    }
+}
+
+
+/* ==============================================================================
+   FILE: VSScreenState.java
+   =============================================================================*/
+
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.Image;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.TextAlignment;
+
+public class VSScreenState extends GameState {
+
+    private double timer = 0;
+    private Image p1Portrait;
+    private Image p2Portrait;
+    private double slideIn = 0;
+
+    public VSScreenState(GameEngine engine) {
+        super(engine);
+    }
+
+    @Override
+    public void enter() {
+        timer = 3.0; // 3 seconds before fight
+        slideIn = 0;
+        
+        // Instantiate the actual fighters for the match
+        Fighter p1 = GameEngine.createFighter(engine.getP1CharIndex());
+        p1.setFacingLeft(false);
+        engine.setPlayer1(p1);
+
+        Fighter p2;
+        if (engine.getGameMode() == GameConfig.MODE_ARCADE) {
+            // Arcade mode: opponent is based on level
+            int level = engine.getArcadeLevel();
+            int p2Index = level % 8; // Cycle through characters
+            if (level % 5 == 0) p2Index = 7; // Boss every 5 levels
+            engine.setP2CharIndex(p2Index);
+            
+            p2 = GameEngine.createFighter(p2Index);
+            p2.setLevel(level);
+            p2.setMaxHp(p2.getMaxHp() + (level - 1) * 15);
+            
+            // Set Stage
+            engine.setStageIndex((level - 1) % GameConfig.STAGE_IDS.length);
+        } else if (engine.getGameMode() == GameConfig.MODE_STORY) {
+            // Story mode: opponent and stage already set by StoryState
+            int p2Index = engine.getP2CharIndex();
+            p2 = GameEngine.createFighter(p2Index);
+            int chapter = engine.getCurrentStoryChapter();
+            p2.setLevel(chapter * 2 + 1);
+            // Stage index already set by StoryState
+        } else {
+            // PvP - P2 already selected
+            p2 = GameEngine.createFighter(engine.getP2CharIndex());
+            engine.setStageIndex((int)(Math.random() * GameConfig.STAGE_IDS.length));
+        }
+        
+        p2.setFacingLeft(true);
+        engine.setPlayer2(p2);
+
+        // Load large portraits for VS screen
+        p1Portrait = SpriteRenderer.loadCharacterPortrait(GameConfig.CHARACTER_IDS[engine.getP1CharIndex()]);
+        p2Portrait = SpriteRenderer.loadCharacterPortrait(GameConfig.CHARACTER_IDS[engine.getP2CharIndex()]);
+
+        AudioManager.playBGM("fight_bgm.wav");
+    }
+
+    @Override
+    public void exit() {
+    }
+
+    @Override
+    public void update(double dt) {
+        timer -= dt;
+        if (slideIn < 1.0) {
+            slideIn += dt * 2.0;
+        }
+
+        if (timer <= 0) {
+            engine.switchState("Fight");
+        }
+    }
+
+    @Override
+    public void render(GraphicsContext gc) {
+        // Black background
+        gc.setFill(Color.BLACK);
+        gc.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+
+        // Slide in animation
+        double p1X = -400 + (slideIn * 400);
+        double p2X = GameConfig.CANVAS_WIDTH - (slideIn * 400);
+
+        // P1 Portrait
+        if (p1Portrait != null) {
+            gc.drawImage(p1Portrait, p1X, 100, 400, 400);
+        }
+        // P1 Name
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.setFont(Font.font("Impact", FontWeight.BOLD, 48));
+        gc.setFill(Color.CYAN);
+        gc.fillText(engine.getPlayer1().getName(), p1X + 20, 550);
+
+        // P2 Portrait (Flipped)
+        if (p2Portrait != null) {
+            gc.save();
+            gc.translate(p2X + 400, 100);
+            gc.scale(-1, 1);
+            gc.drawImage(p2Portrait, 0, 0, 400, 400);
+            gc.restore();
+        }
+        // P2 Name
+        gc.setTextAlign(TextAlignment.RIGHT);
+        gc.setFill(Color.RED);
+        gc.fillText(engine.getPlayer2().getName(), p2X + 380, 550);
+
+        // VS Text
+        if (slideIn >= 1.0) {
+            gc.setTextAlign(TextAlignment.CENTER);
+            gc.setFont(Font.font("Impact", FontWeight.BOLD, 120));
+            
+            // Pulsing effect
+            double scale = 1.0 + Math.sin(timer * 10) * 0.1;
+            gc.save();
+            gc.translate(GameConfig.CANVAS_WIDTH / 2, GameConfig.CANVAS_HEIGHT / 2);
+            gc.scale(scale, scale);
+            
+            gc.setFill(Color.BLACK);
+            gc.fillText("VS", 5, 5); // shadow
+            gc.setFill(GameConfig.COLOR_GOLD);
+            gc.fillText("VS", 0, 0);
+            gc.setStroke(Color.WHITE);
+            gc.setLineWidth(3);
+            gc.strokeText("VS", 0, 0);
+            
+            gc.restore();
+            
+            // "GET READY" text
+            gc.setFont(Font.font("Verdana", FontWeight.BOLD, 24));
+            gc.setFill(Color.WHITE);
+            gc.fillText("GET READY FOR THE NEXT BATTLE", GameConfig.CANVAS_WIDTH / 2, GameConfig.CANVAS_HEIGHT - 50);
+        }
+    }
+
+    @Override
+    public void handleKeyPressed(javafx.scene.input.KeyCode code) {
+        // Skip VS screen if pressed
+        if (code == javafx.scene.input.KeyCode.SPACE) {
+            timer = 0;
+        }
+    }
+}
+
+

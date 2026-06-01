@@ -1,0 +1,5 @@
+WARNING: A native method in com.sun.media.jfxmedia.logging.Logger has been bound
+WARNING: com.sun.media.jfxmedia.logging.Logger::nativeInit is declared in module javafx.media (file:/D:/BSCS15NUST/Semester%202/Object%20Oriented%20Programming/JoshEJung/lib/javafx.media.jar)
+WARNING: Use --enable-native-access=javafx.media to avoid a warning for native methods declared in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
